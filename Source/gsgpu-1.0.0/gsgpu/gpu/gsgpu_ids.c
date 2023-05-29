@@ -24,7 +24,7 @@
 
 #include <linux/idr.h>
 #include <linux/dma-fence-array.h>
-#include <drm/drmP.h>
+
 
 #include "gsgpu.h"
 #include "gsgpu_trace.h"
@@ -43,7 +43,7 @@ static DEFINE_IDA(gsgpu_pasid_ida);
 /* Helper to free pasid from a fence callback */
 struct gsgpu_pasid_cb {
 	struct dma_fence_cb cb;
-	unsigned int pasid;
+	u32 pasid;
 };
 
 /**
@@ -79,7 +79,7 @@ int gsgpu_pasid_alloc(unsigned int bits)
  * gsgpu_pasid_free - Free a PASID
  * @pasid: PASID to free
  */
-void gsgpu_pasid_free(unsigned int pasid)
+void gsgpu_pasid_free(u32 pasid)
 {
 	trace_gsgpu_pasid_freed(pasid);
 	ida_simple_remove(&gsgpu_pasid_ida, pasid);
@@ -104,37 +104,20 @@ static void gsgpu_pasid_free_cb(struct dma_fence *fence,
  *
  * Free the pasid only after all the fences in resv are signaled.
  */
-void gsgpu_pasid_free_delayed(struct reservation_object *resv,
-			       unsigned int pasid)
+void gsgpu_pasid_free_delayed(struct dma_resv *resv,
+			       u32 pasid)
 {
-	struct dma_fence *fence, **fences;
 	struct gsgpu_pasid_cb *cb;
-	unsigned count;
+	struct dma_fence *fence;
 	int r;
 
-	r = reservation_object_get_fences_rcu(resv, NULL, &count, &fences);
+	r = dma_resv_get_singleton(resv, DMA_RESV_USAGE_BOOKKEEP, &fence);
 	if (r)
 		goto fallback;
 
-	if (count == 0) {
+	if (!fence) {
 		gsgpu_pasid_free(pasid);
 		return;
-	}
-
-	if (count == 1) {
-		fence = fences[0];
-		kfree(fences);
-	} else {
-		uint64_t context = dma_fence_context_alloc(1);
-		struct dma_fence_array *array;
-
-		array = dma_fence_array_create(count, fences, context,
-					       1, false);
-		if (!array) {
-			kfree(fences);
-			goto fallback;
-		}
-		fence = &array->base;
 	}
 
 	cb = kmalloc(sizeof(*cb), GFP_KERNEL);
@@ -156,8 +139,8 @@ fallback:
 	/* Not enough memory for the delayed delete, as last resort
 	 * block for all the fences to complete.
 	 */
-	reservation_object_wait_timeout_rcu(resv, true, false,
-					    MAX_SCHEDULE_TIMEOUT);
+	dma_resv_wait_timeout(resv, DMA_RESV_USAGE_BOOKKEEP,
+			      false, MAX_SCHEDULE_TIMEOUT);
 	gsgpu_pasid_free(pasid);
 }
 
@@ -182,39 +165,51 @@ bool gsgpu_vmid_had_gpu_reset(struct gsgpu_device *adev,
 		atomic_read(&adev->gpu_reset_counter);
 }
 
+/* Check if the id is compatible with the job */
+static bool gsgpu_vmid_compatible(struct gsgpu_vmid *id,
+				   struct gsgpu_job *job)
+{
+	return  id->pd_gpu_addr == job->vm_pd_addr;
+}
+
 /**
- * gsgpu_vm_grab_idle - grab idle VMID
+ * gsgpu_vmid_grab_idle - grab idle VMID
  *
  * @vm: vm to allocate id for
  * @ring: ring we want to submit job to
- * @sync: sync object where we add dependencies
  * @idle: resulting idle VMID
+ * @fence: fence to wait for if no id could be grabbed
  *
  * Try to find an idle VMID, if none is idle add a fence to wait to the sync
  * object. Returns -ENOMEM when we are out of memory.
  */
 static int gsgpu_vmid_grab_idle(struct gsgpu_vm *vm,
 				 struct gsgpu_ring *ring,
-				 struct gsgpu_sync *sync,
-				 struct gsgpu_vmid **idle)
+				 struct gsgpu_vmid **idle,
+				 struct dma_fence **fence)
 {
 	struct gsgpu_device *adev = ring->adev;
 	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
 	struct dma_fence **fences;
 	unsigned i;
-	int r;
 
-	if (ring->vmid_wait && !dma_fence_is_signaled(ring->vmid_wait))
-		return gsgpu_sync_fence(adev, sync, ring->vmid_wait, false);
+	if (!dma_fence_is_signaled(ring->vmid_wait)) {
+		*fence = dma_fence_get(ring->vmid_wait);
+		return 0;
+	}
 
-	fences = kmalloc_array(sizeof(void *), id_mgr->num_ids, GFP_KERNEL);
+	fences = kmalloc_array(id_mgr->num_ids, sizeof(void *), GFP_KERNEL);
 	if (!fences)
 		return -ENOMEM;
 
 	/* Check if we have an idle VMID */
 	i = 0;
 	list_for_each_entry((*idle), &id_mgr->ids_lru, list) {
-		fences[i] = gsgpu_sync_peek_fence(&(*idle)->active, ring);
+		/* Don't use per engine and per process VMID at the same time */
+		struct gsgpu_ring *r = adev->vm_manager.concurrent_flush ?
+			NULL : ring;
+
+		fences[i] = gsgpu_sync_peek_fence(&(*idle)->active, r);
 		if (!fences[i])
 			break;
 		++i;
@@ -240,10 +235,10 @@ static int gsgpu_vmid_grab_idle(struct gsgpu_vm *vm,
 			return -ENOMEM;
 		}
 
-		r = gsgpu_sync_fence(adev, sync, &array->base, false);
+		*fence = dma_fence_get(&array->base);
 		dma_fence_put(ring->vmid_wait);
 		ring->vmid_wait = &array->base;
-		return r;
+		return 0;
 	}
 	kfree(fences);
 
@@ -251,49 +246,49 @@ static int gsgpu_vmid_grab_idle(struct gsgpu_vm *vm,
 }
 
 /**
- * gsgpu_vm_grab_reserved - try to assign reserved VMID
+ * gsgpu_vmid_grab_reserved - try to assign reserved VMID
  *
  * @vm: vm to allocate id for
  * @ring: ring we want to submit job to
- * @sync: sync object where we add dependencies
- * @fence: fence protecting ID from reuse
  * @job: job who wants to use the VMID
+ * @id: resulting VMID
+ * @fence: fence to wait for if no id could be grabbed
  *
  * Try to assign a reserved VMID.
  */
 static int gsgpu_vmid_grab_reserved(struct gsgpu_vm *vm,
 				     struct gsgpu_ring *ring,
-				     struct gsgpu_sync *sync,
-				     struct dma_fence *fence,
 				     struct gsgpu_job *job,
-				     struct gsgpu_vmid **id)
+				     struct gsgpu_vmid **id,
+				     struct dma_fence **fence)
 {
 	struct gsgpu_device *adev = ring->adev;
+	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
 	uint64_t fence_context = adev->fence_context + ring->idx;
-	struct dma_fence *updates = sync->last_vm_update;
 	bool needs_flush = vm->use_cpu_for_update;
-	int r = 0;
+	uint64_t updates = gsgpu_vm_tlb_seq(vm);
+	int r;
 
-	*id = vm->reserved_vmid;
-	if (updates && (*id)->flushed_updates &&
-	    updates->context == (*id)->flushed_updates->context &&
-	    !dma_fence_is_later(updates, (*id)->flushed_updates))
-	    updates = NULL;
-
-	if ((*id)->owner != vm->entity.fence_context ||
-	    job->vm_pd_addr != (*id)->pd_gpu_addr ||
-	    updates || !(*id)->last_flush ||
+	*id = id_mgr->reserved;
+	if ((*id)->owner != vm->immediate.fence_context ||
+	    !gsgpu_vmid_compatible(*id, job) ||
+	    (*id)->flushed_updates < updates ||
+	    !(*id)->last_flush ||
 	    ((*id)->last_flush->context != fence_context &&
 	     !dma_fence_is_signaled((*id)->last_flush))) {
 		struct dma_fence *tmp;
+
+		/* Don't use per engine and per process VMID at the same time */
+		if (adev->vm_manager.concurrent_flush)
+			ring = NULL;
 
 		/* to prevent one context starved by another context */
 		(*id)->pd_gpu_addr = 0;
 		tmp = gsgpu_sync_peek_fence(&(*id)->active, ring);
 		if (tmp) {
 			*id = NULL;
-			r = gsgpu_sync_fence(adev, sync, tmp, false);
-			return r;
+			*fence = dma_fence_get(tmp);
+			return 0;
 		}
 		needs_flush = true;
 	}
@@ -301,41 +296,36 @@ static int gsgpu_vmid_grab_reserved(struct gsgpu_vm *vm,
 	/* Good we can use this VMID. Remember this submission as
 	* user of the VMID.
 	*/
-	r = gsgpu_sync_fence(ring->adev, &(*id)->active, fence, false);
+	r = gsgpu_sync_fence(&(*id)->active, &job->base.s_fence->finished);
 	if (r)
 		return r;
 
-	if (updates) {
-		dma_fence_put((*id)->flushed_updates);
-		(*id)->flushed_updates = dma_fence_get(updates);
-	}
 	job->vm_needs_flush = needs_flush;
+	job->spm_update_needed = true;
 	return 0;
 }
 
 /**
- * gsgpu_vm_grab_used - try to reuse a VMID
+ * gsgpu_vmid_grab_used - try to reuse a VMID
  *
  * @vm: vm to allocate id for
  * @ring: ring we want to submit job to
- * @sync: sync object where we add dependencies
- * @fence: fence protecting ID from reuse
  * @job: job who wants to use the VMID
  * @id: resulting VMID
+ * @fence: fence to wait for if no id could be grabbed
  *
  * Try to reuse a VMID for this submission.
  */
 static int gsgpu_vmid_grab_used(struct gsgpu_vm *vm,
 				 struct gsgpu_ring *ring,
-				 struct gsgpu_sync *sync,
-				 struct dma_fence *fence,
 				 struct gsgpu_job *job,
-				 struct gsgpu_vmid **id)
+				 struct gsgpu_vmid **id,
+				 struct dma_fence **fence)
 {
 	struct gsgpu_device *adev = ring->adev;
 	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
 	uint64_t fence_context = adev->fence_context + ring->idx;
-	struct dma_fence *updates = sync->last_vm_update;
+	uint64_t updates = gsgpu_vm_tlb_seq(vm);
 	int r;
 
 	job->vm_needs_flush = vm->use_cpu_for_update;
@@ -343,13 +333,12 @@ static int gsgpu_vmid_grab_used(struct gsgpu_vm *vm,
 	/* Check if we can use a VMID already assigned to this VM */
 	list_for_each_entry_reverse((*id), &id_mgr->ids_lru, list) {
 		bool needs_flush = vm->use_cpu_for_update;
-		struct dma_fence *flushed;
 
 		/* Check all the prerequisites to using this VMID */
-		if ((*id)->owner != vm->entity.fence_context)
+		if ((*id)->owner != vm->immediate.fence_context)
 			continue;
 
-		if ((*id)->pd_gpu_addr != job->vm_pd_addr)
+		if (!gsgpu_vmid_compatible(*id, job))
 			continue;
 
 		if (!(*id)->last_flush ||
@@ -357,25 +346,19 @@ static int gsgpu_vmid_grab_used(struct gsgpu_vm *vm,
 		     !dma_fence_is_signaled((*id)->last_flush)))
 			needs_flush = true;
 
-		flushed  = (*id)->flushed_updates;
-		if (updates && (!flushed || dma_fence_is_later(updates, flushed)))
+		if ((*id)->flushed_updates < updates)
 			needs_flush = true;
 
-		/* Concurrent flushes are only possible starting with Vega10 */
-		// if (needs_flush)
+		// if (needs_flush && !adev->vm_manager.concurrent_flush)
 		// 	continue;
 
 		/* Good, we can use this VMID. Remember this submission as
 		 * user of the VMID.
 		 */
-		r = gsgpu_sync_fence(ring->adev, &(*id)->active, fence, false);
+		r = gsgpu_sync_fence(&(*id)->active,
+				      &job->base.s_fence->finished);
 		if (r)
 			return r;
-
-		if (updates && (!flushed || dma_fence_is_later(updates, flushed))) {
-			dma_fence_put((*id)->flushed_updates);
-			(*id)->flushed_updates = dma_fence_get(updates);
-		}
 
 		job->vm_needs_flush |= needs_flush;
 		return 0;
@@ -386,19 +369,17 @@ static int gsgpu_vmid_grab_used(struct gsgpu_vm *vm,
 }
 
 /**
- * gsgpu_vm_grab_id - allocate the next free VMID
+ * gsgpu_vmid_grab - allocate the next free VMID
  *
  * @vm: vm to allocate id for
  * @ring: ring we want to submit job to
- * @sync: sync object where we add dependencies
- * @fence: fence protecting ID from reuse
  * @job: job who wants to use the VMID
+ * @fence: fence to wait for if no id could be grabbed
  *
  * Allocate an id for the vm, adding fences to the sync obj as necessary.
  */
 int gsgpu_vmid_grab(struct gsgpu_vm *vm, struct gsgpu_ring *ring,
-		     struct gsgpu_sync *sync, struct dma_fence *fence,
-		     struct gsgpu_job *job)
+		     struct gsgpu_job *job, struct dma_fence **fence)
 {
 	struct gsgpu_device *adev = ring->adev;
 	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
@@ -407,48 +388,47 @@ int gsgpu_vmid_grab(struct gsgpu_vm *vm, struct gsgpu_ring *ring,
 	int r = 0;
 
 	mutex_lock(&id_mgr->lock);
-	r = gsgpu_vmid_grab_idle(vm, ring, sync, &idle);
+	r = gsgpu_vmid_grab_idle(vm, ring, &idle, fence);
 	if (r || !idle)
 		goto error;
 
 	if (vm->reserved_vmid) {
-		r = gsgpu_vmid_grab_reserved(vm, ring, sync, fence, job, &id);
+		r = gsgpu_vmid_grab_reserved(vm, ring, job, &id, fence);
 		if (r || !id)
 			goto error;
 	} else {
-		r = gsgpu_vmid_grab_used(vm, ring, sync, fence, job, &id);
+		r = gsgpu_vmid_grab_used(vm, ring, job, &id, fence);
 		if (r)
 			goto error;
 
 		if (!id) {
-			struct dma_fence *updates = sync->last_vm_update;
-
 			/* Still no ID to use? Then use the idle one found earlier */
 			id = idle;
 
 			/* Remember this submission as user of the VMID */
-			r = gsgpu_sync_fence(ring->adev, &id->active,
-					      fence, false);
+			r = gsgpu_sync_fence(&id->active,
+					      &job->base.s_fence->finished);
 			if (r)
 				goto error;
 
-			dma_fence_put(id->flushed_updates);
-			id->flushed_updates = dma_fence_get(updates);
 			job->vm_needs_flush = true;
 		}
 
 		list_move_tail(&id->list, &id_mgr->ids_lru);
 	}
 
-	id->pd_gpu_addr = job->vm_pd_addr;
-	id->owner = vm->entity.fence_context;
-
+	job->gds_switch_needed = false; // gsgpu_vmid_gds_switch_needed(id, job);
 	if (job->vm_needs_flush) {
+		id->flushed_updates = gsgpu_vm_tlb_seq(vm);
 		dma_fence_put(id->last_flush);
 		id->last_flush = NULL;
 	}
 	job->vmid = id - id_mgr->ids;
 	job->pasid = vm->pasid;
+
+	id->pd_gpu_addr = job->vm_pd_addr;
+	id->owner = vm->immediate.fence_context;
+
 	trace_gsgpu_vm_grab_id(vm, ring, job);
 
 error:
@@ -456,46 +436,45 @@ error:
 	return r;
 }
 
-int gsgpu_vmid_alloc_reserved(struct gsgpu_device *adev, struct gsgpu_vm *vm)
-{
-	struct gsgpu_vmid_mgr *id_mgr;
-	struct gsgpu_vmid *idle;
-	int r = 0;
-
-	id_mgr = &adev->vm_manager.id_mgr;
-	mutex_lock(&id_mgr->lock);
-	if (vm->reserved_vmid)
-		goto unlock;
-	if (atomic_inc_return(&id_mgr->reserved_vmid_num) >
-	    GSGPU_VM_MAX_RESERVED_VMID) {
-		DRM_ERROR("Over limitation of reserved vmid\n");
-		atomic_dec(&id_mgr->reserved_vmid_num);
-		r = -EINVAL;
-		goto unlock;
-	}
-	/* Select the first entry VMID */
-	idle = list_first_entry(&id_mgr->ids_lru, struct gsgpu_vmid, list);
-	list_del_init(&idle->list);
-	vm->reserved_vmid = idle;
-	mutex_unlock(&id_mgr->lock);
-
-	return 0;
-unlock:
-	mutex_unlock(&id_mgr->lock);
-	return r;
-}
-
-void gsgpu_vmid_free_reserved(struct gsgpu_device *adev, struct gsgpu_vm *vm)
+int gsgpu_vmid_alloc_reserved(struct gsgpu_device *adev,
+			       struct gsgpu_vm *vm)
 {
 	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
 
 	mutex_lock(&id_mgr->lock);
-	if (vm->reserved_vmid) {
-		list_add(&vm->reserved_vmid->list,
-			&id_mgr->ids_lru);
-		vm->reserved_vmid = NULL;
-		atomic_dec(&id_mgr->reserved_vmid_num);
+	if (vm->reserved_vmid)
+		goto unlock;
+
+	++id_mgr->reserved_use_count;
+	if (!id_mgr->reserved) {
+		struct gsgpu_vmid *id;
+
+		id = list_first_entry(&id_mgr->ids_lru, struct gsgpu_vmid,
+				      list);
+		/* Remove from normal round robin handling */
+		list_del_init(&id->list);
+		id_mgr->reserved = id;
 	}
+	vm->reserved_vmid = id_mgr->reserved;
+
+unlock:
+	mutex_unlock(&id_mgr->lock);
+	return 0;
+}
+
+void gsgpu_vmid_free_reserved(struct gsgpu_device *adev,
+			       struct gsgpu_vm *vm)
+{
+	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
+
+	mutex_lock(&id_mgr->lock);
+	if (vm->reserved_vmid &&
+	    !--id_mgr->reserved_use_count) {
+		/* give the reserved ID back to normal round robin */
+		list_add(&id_mgr->reserved->list, &id_mgr->ids_lru);
+		id_mgr->reserved = NULL;
+	}
+	vm->reserved_vmid = false;
 	mutex_unlock(&id_mgr->lock);
 }
 
@@ -528,10 +507,12 @@ void gsgpu_vmid_reset_all(struct gsgpu_device *adev)
 {
 	unsigned i;
 
-	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
-
-	for (i = 1; i < id_mgr->num_ids; ++i)
-		gsgpu_vmid_reset(adev, i);
+	{
+		struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
+	
+		for (i = 1; i < id_mgr->num_ids; ++i)
+			gsgpu_vmid_reset(adev, i);
+	}
 }
 
 /**
@@ -544,12 +525,10 @@ void gsgpu_vmid_reset_all(struct gsgpu_device *adev)
 void gsgpu_vmid_mgr_init(struct gsgpu_device *adev)
 {
 	unsigned i;
-
 	struct gsgpu_vmid_mgr *id_mgr = &adev->vm_manager.id_mgr;
 
 	mutex_init(&id_mgr->lock);
 	INIT_LIST_HEAD(&id_mgr->ids_lru);
-	atomic_set(&id_mgr->reserved_vmid_num, 0);
 
 	/* skip over VMID 0, since it is the system VM */
 	for (i = 1; i < id_mgr->num_ids; ++i) {

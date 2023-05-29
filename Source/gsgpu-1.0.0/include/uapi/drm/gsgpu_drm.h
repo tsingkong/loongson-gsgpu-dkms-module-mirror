@@ -53,7 +53,7 @@ extern "C" {
 #define DRM_GSGPU_WAIT_FENCES		0x12
 #define DRM_GSGPU_VM			0x13
 #define DRM_GSGPU_FENCE_TO_HANDLE	0x14
-#define DRM_GSGPU_SCHED			0x15
+#define DRM_GSGPU_SCHED		0x15
 #define DRM_GSGPU_HWSEMA_OP		0x16
 
 #define DRM_IOCTL_GSGPU_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_GSGPU_GEM_CREATE, union drm_gsgpu_gem_create)
@@ -82,7 +82,7 @@ extern "C" {
  *
  * %GSGPU_GEM_DOMAIN_GTT	GPU accessible system memory, mapped into the
  * GPU's virtual address space via gart. Gart memory linearizes non-contiguous
- * pages of system memory, allows GPU access system memory in a linezrized
+ * pages of system memory, allows GPU access system memory in a linearized
  * fashion.
  *
  * %GSGPU_GEM_DOMAIN_VRAM	Local video memory. For APUs, it is memory
@@ -118,8 +118,6 @@ extern "C" {
 #define GSGPU_GEM_CREATE_CPU_GTT_USWC		(1 << 2)
 /* Flag that the memory should be in VRAM and cleared */
 #define GSGPU_GEM_CREATE_VRAM_CLEARED		(1 << 3)
-/* Flag that create shadow bo(GTT) while allocating vram bo */
-#define GSGPU_GEM_CREATE_SHADOW		(1 << 4)
 /* Flag that allocating the BO should use linear VRAM */
 #define GSGPU_GEM_CREATE_VRAM_CONTIGUOUS	(1 << 5)
 /* Flag that BO is always valid in this VM */
@@ -127,11 +125,45 @@ extern "C" {
 /* Flag that BO sharing will be explicitly synchronized */
 #define GSGPU_GEM_CREATE_EXPLICIT_SYNC		(1 << 7)
 /* Flag that indicates allocating MQD gart on GFX9, where the mtype
- * for the second page onward should be set to NC.
+ * for the second page onward should be set to NC. It should never
+ * be used by user space applications.
  */
-#define GSGPU_GEM_CREATE_MQD_GFX9		(1 << 8)
+#define GSGPU_GEM_CREATE_CP_MQD_GFX9		(1 << 8)
+
+/* Flag that BO may contain sensitive data that must be wiped before
+ * releasing the memory
+ */
 /* Flag that BO is compressed bit 9-11 */
 #define GSGPU_GEM_CREATE_COMPRESSED_MASK	(0x7ull << 9)
+
+#define GSGPU_GEM_CREATE_VRAM_WIPE_ON_RELEASE	(1 << 9)
+/* Flag that BO will be encrypted and that the TMZ bit should be
+ * set in the PTEs when mapping this buffer via GPUVM or
+ * accessing it with various hw blocks
+ */
+#define GSGPU_GEM_CREATE_ENCRYPTED		(1 << 10)
+/* Flag that BO will be used only in preemptible context, which does
+ * not require GTT memory accounting
+ */
+#define GSGPU_GEM_CREATE_PREEMPTIBLE		(1 << 11)
+/* Flag that BO can be discarded under memory pressure without keeping the
+ * content.
+ */
+#define GSGPU_GEM_CREATE_DISCARDABLE		(1 << 12)
+/* Flag that BO is shared coherently between multiple devices or CPU threads.
+ * May depend on GPU instructions to flush caches explicitly
+ *
+ * This influences the choice of MTYPE in the PTEs on GFXv9 and later GPUs and
+ * may override the MTYPE selected in GSGPU_VA_OP_MAP.
+ */
+#define GSGPU_GEM_CREATE_COHERENT		(1 << 13)
+/* Flag that BO should not be cached by GPU. Coherent without having to flush
+ * GPU caches explicitly
+ *
+ * This influences the choice of MTYPE in the PTEs on GFXv9 and later GPUs and
+ * may override the MTYPE selected in GSGPU_VA_OP_MAP.
+ */
+#define GSGPU_GEM_CREATE_UNCACHED		(1 << 14)
 
 struct drm_gsgpu_gem_create_in  {
 	/** the requested memory size */
@@ -198,6 +230,8 @@ union drm_gsgpu_bo_list {
 #define GSGPU_CTX_OP_FREE_CTX	2
 #define GSGPU_CTX_OP_QUERY_STATE	3
 #define GSGPU_CTX_OP_QUERY_STATE2	4
+#define GSGPU_CTX_OP_GET_STABLE_PSTATE	5
+#define GSGPU_CTX_OP_SET_STABLE_PSTATE	6
 
 /* GPU reset status */
 #define GSGPU_CTX_NO_RESET		0
@@ -214,22 +248,37 @@ union drm_gsgpu_bo_list {
 #define GSGPU_CTX_QUERY2_FLAGS_VRAMLOST (1<<1)
 /* indicate some job from this context once cause gpu hang */
 #define GSGPU_CTX_QUERY2_FLAGS_GUILTY   (1<<2)
+/* indicate some errors are detected by RAS */
+#define GSGPU_CTX_QUERY2_FLAGS_RAS_CE   (1<<3)
+#define GSGPU_CTX_QUERY2_FLAGS_RAS_UE   (1<<4)
 
 /* Context priority level */
 #define GSGPU_CTX_PRIORITY_UNSET       -2048
 #define GSGPU_CTX_PRIORITY_VERY_LOW    -1023
 #define GSGPU_CTX_PRIORITY_LOW         -512
 #define GSGPU_CTX_PRIORITY_NORMAL      0
-/* Selecting a priority above NORMAL requires CAP_SYS_NICE or DRM_MASTER */
+/*
+ * When used in struct drm_gsgpu_ctx_in, a priority above NORMAL requires
+ * CAP_SYS_NICE or DRM_MASTER
+*/
 #define GSGPU_CTX_PRIORITY_HIGH        512
 #define GSGPU_CTX_PRIORITY_VERY_HIGH   1023
+
+/* select a stable profiling pstate for perfmon tools */
+#define GSGPU_CTX_STABLE_PSTATE_FLAGS_MASK  0xf
+#define GSGPU_CTX_STABLE_PSTATE_NONE  0
+#define GSGPU_CTX_STABLE_PSTATE_STANDARD  1
+#define GSGPU_CTX_STABLE_PSTATE_MIN_SCLK  2
+#define GSGPU_CTX_STABLE_PSTATE_MIN_MCLK  3
+#define GSGPU_CTX_STABLE_PSTATE_PEAK  4
 
 struct drm_gsgpu_ctx_in {
 	/** GSGPU_CTX_OP_* */
 	__u32	op;
-	/** For future use, no flags defined so far */
+	/** Flags */
 	__u32	flags;
 	__u32	ctx_id;
+	/** GSGPU_CTX_PRIORITY_* */
 	__s32	priority;
 };
 
@@ -247,6 +296,11 @@ union drm_gsgpu_ctx_out {
 			/** Reset status since the last call of the ioctl. */
 			__u32	reset_status;
 		} state;
+
+		struct {
+			__u32	flags;
+			__u32	_pad;
+		} pstate;
 };
 
 union drm_gsgpu_ctx {
@@ -276,13 +330,15 @@ union drm_gsgpu_vm {
 
 /* sched ioctl */
 #define GSGPU_SCHED_OP_PROCESS_PRIORITY_OVERRIDE	1
+#define GSGPU_SCHED_OP_CONTEXT_PRIORITY_OVERRIDE	2
 
 struct drm_gsgpu_sched_in {
 	/* GSGPU_SCHED_OP_* */
 	__u32	op;
 	__u32	fd;
+	/** GSGPU_CTX_PRIORITY_* */
 	__s32	priority;
-	__u32	flags;
+	__u32   ctx_id;
 };
 
 union drm_gsgpu_sched {
@@ -330,6 +386,16 @@ struct drm_gsgpu_gem_userptr {
 /* GFX9 and later: */
 #define GSGPU_TILING_SWIZZLE_MODE_SHIFT		0
 #define GSGPU_TILING_SWIZZLE_MODE_MASK			0x1f
+#define GSGPU_TILING_DCC_OFFSET_256B_SHIFT		5
+#define GSGPU_TILING_DCC_OFFSET_256B_MASK		0xFFFFFF
+#define GSGPU_TILING_DCC_PITCH_MAX_SHIFT		29
+#define GSGPU_TILING_DCC_PITCH_MAX_MASK		0x3FFF
+#define GSGPU_TILING_DCC_INDEPENDENT_64B_SHIFT		43
+#define GSGPU_TILING_DCC_INDEPENDENT_64B_MASK		0x1
+#define GSGPU_TILING_DCC_INDEPENDENT_128B_SHIFT	44
+#define GSGPU_TILING_DCC_INDEPENDENT_128B_MASK		0x1
+#define GSGPU_TILING_SCANOUT_SHIFT			63
+#define GSGPU_TILING_SCANOUT_MASK			0x1
 
 /* Set/Get helpers for tiling flags. */
 #define GSGPU_TILING_SET(field, value) \
@@ -477,14 +543,18 @@ struct drm_gsgpu_gem_op {
 #define GSGPU_VM_MTYPE_MASK		(0xf << 5)
 /* Default MTYPE. Pre-AI must use this.  Recommended for newer ASICs. */
 #define GSGPU_VM_MTYPE_DEFAULT		(0 << 5)
-/* Use NC MTYPE instead of default MTYPE */
+/* Use Non Coherent MTYPE instead of default MTYPE */
 #define GSGPU_VM_MTYPE_NC		(1 << 5)
-/* Use WC MTYPE instead of default MTYPE */
+/* Use Write Combine MTYPE instead of default MTYPE */
 #define GSGPU_VM_MTYPE_WC		(2 << 5)
-/* Use CC MTYPE instead of default MTYPE */
+/* Use Cache Coherent MTYPE instead of default MTYPE */
 #define GSGPU_VM_MTYPE_CC		(3 << 5)
-/* Use UC MTYPE instead of default MTYPE */
+/* Use UnCached MTYPE instead of default MTYPE */
 #define GSGPU_VM_MTYPE_UC		(4 << 5)
+/* Use Read Write MTYPE instead of default MTYPE */
+#define GSGPU_VM_MTYPE_RW		(5 << 5)
+/* don't allocate MALL */
+#define GSGPU_VM_PAGE_NOALLOC		(1 << 9)
 
 struct drm_gsgpu_gem_va {
 	/** GEM object handle */
@@ -514,6 +584,9 @@ struct drm_gsgpu_gem_va {
 #define GSGPU_CHUNK_ID_SYNCOBJ_IN      0x04
 #define GSGPU_CHUNK_ID_SYNCOBJ_OUT     0x05
 #define GSGPU_CHUNK_ID_BO_HANDLES      0x06
+#define GSGPU_CHUNK_ID_SCHEDULED_DEPENDENCIES	0x07
+#define GSGPU_CHUNK_ID_SYNCOBJ_TIMELINE_WAIT    0x08
+#define GSGPU_CHUNK_ID_SYNCOBJ_TIMELINE_SIGNAL  0x09
 
 struct drm_gsgpu_cs_chunk {
 	__u32		chunk_id;
@@ -527,7 +600,7 @@ struct drm_gsgpu_cs_in {
 	/**  Handle of resource list associated with CS */
 	__u32		bo_list_handle;
 	__u32		num_chunks;
-	__u32		_pad;
+	__u32		flags;
 	/** this points to __u64 * which point to cs chunks */
 	__u64		chunks;
 };
@@ -555,6 +628,19 @@ union drm_gsgpu_cs {
 /* The IB fence should do the L2 writeback but not invalidate any shader
  * caches (L2/vL1/sL1/I$). */
 #define GSGPU_IB_FLAG_TC_WB_NOT_INVALIDATE (1 << 3)
+
+/* Set GDS_COMPUTE_MAX_WAVE_ID = DEFAULT before PACKET3_INDIRECT_BUFFER.
+ * This will reset wave ID counters for the IB.
+ */
+#define GSGPU_IB_FLAG_RESET_GDS_MAX_WAVE_ID (1 << 4)
+
+/* Flag the IB as secure (TMZ)
+ */
+#define GSGPU_IB_FLAGS_SECURE  (1 << 5)
+
+/* Tell KMD to flush and invalidate caches
+ */
+#define GSGPU_IB_FLAG_EMIT_MEM_SYNC  (1 << 6)
 
 struct drm_gsgpu_cs_chunk_ib {
 	__u32 _pad;
@@ -589,6 +675,12 @@ struct drm_gsgpu_cs_chunk_sem {
 	__u32 handle;
 };
 
+struct drm_gsgpu_cs_chunk_syncobj {
+       __u32 handle;
+       __u32 flags;
+       __u64 point;
+};
+
 #define GSGPU_FENCE_TO_HANDLE_GET_SYNCOBJ	0
 #define GSGPU_FENCE_TO_HANDLE_GET_SYNCOBJ_FD	1
 #define GSGPU_FENCE_TO_HANDLE_GET_SYNC_FILE_FD	2
@@ -611,12 +703,14 @@ struct drm_gsgpu_cs_chunk_data {
 	};
 };
 
-/**
+/*
  *  Query h/w info: Flag that this is integrated (a.h.a. fusion) GPU
  *
  */
 #define GSGPU_IDS_FLAGS_FUSION         0x1
 #define GSGPU_IDS_FLAGS_PREEMPTION     0x2
+#define GSGPU_IDS_FLAGS_TMZ            0x4
+#define GSGPU_IDS_FLAGS_CONFORMANT_TRUNC_COORD 0x8
 
 /* indicate if acceleration can be working */
 #define GSGPU_INFO_ACCEL_WORKING		0x00
@@ -662,6 +756,26 @@ struct drm_gsgpu_cs_chunk_data {
 	#define GSGPU_INFO_FW_GFX_RLC_RESTORE_LIST_GPM_MEM 0x10
 	/* Subquery id: Query GFX RLC SRLS firmware version */
 	#define GSGPU_INFO_FW_GFX_RLC_RESTORE_LIST_SRM_MEM 0x11
+	/* Subquery id: Query DMCU firmware version */
+	#define GSGPU_INFO_FW_DMCU		0x12
+	#define GSGPU_INFO_FW_TA		0x13
+	/* Subquery id: Query DMCUB firmware version */
+	#define GSGPU_INFO_FW_DMCUB		0x14
+	/* Subquery id: Query TOC firmware version */
+	#define GSGPU_INFO_FW_TOC		0x15
+	/* Subquery id: Query CAP firmware version */
+	#define GSGPU_INFO_FW_CAP		0x16
+	/* Subquery id: Query GFX RLCP firmware version */
+	#define GSGPU_INFO_FW_GFX_RLCP		0x17
+	/* Subquery id: Query GFX RLCV firmware version */
+	#define GSGPU_INFO_FW_GFX_RLCV		0x18
+	/* Subquery id: Query MES_KIQ firmware version */
+	#define GSGPU_INFO_FW_MES_KIQ		0x19
+	/* Subquery id: Query MES firmware version */
+	#define GSGPU_INFO_FW_MES		0x1a
+	/* Subquery id: Query IMU firmware version */
+	#define GSGPU_INFO_FW_IMU		0x1b
+
 /* number of bytes moved for TTM migration */
 #define GSGPU_INFO_NUM_BYTES_MOVED		0x0f
 /* the used VRAM size */
@@ -690,6 +804,8 @@ struct drm_gsgpu_cs_chunk_data {
 	#define GSGPU_INFO_VBIOS_SIZE		0x1
 	/* Subquery id: Query vbios image */
 	#define GSGPU_INFO_VBIOS_IMAGE		0x2
+	/* Subquery id: Query vbios info */
+	#define GSGPU_INFO_VBIOS_INFO		0x3
 /* Query UVD handles */
 #define GSGPU_INFO_NUM_HANDLES			0x1C
 /* Query sensor related information */
@@ -712,9 +828,49 @@ struct drm_gsgpu_cs_chunk_data {
 	#define GSGPU_INFO_SENSOR_STABLE_PSTATE_GFX_SCLK		0x8
 	/* Subquery id: Query GPU stable pstate memory clock */
 	#define GSGPU_INFO_SENSOR_STABLE_PSTATE_GFX_MCLK		0x9
+	/* Subquery id: Query GPU peak pstate shader clock */
+	#define GSGPU_INFO_SENSOR_PEAK_PSTATE_GFX_SCLK			0xa
+	/* Subquery id: Query GPU peak pstate memory clock */
+	#define GSGPU_INFO_SENSOR_PEAK_PSTATE_GFX_MCLK			0xb
 /* Number of VRAM page faults on CPU access. */
 #define GSGPU_INFO_NUM_VRAM_CPU_PAGE_FAULTS	0x1E
 #define GSGPU_INFO_VRAM_LOST_COUNTER		0x1F
+/* query ras mask of enabled features*/
+#define GSGPU_INFO_RAS_ENABLED_FEATURES	0x20
+/* RAS MASK: UMC (VRAM) */
+#define GSGPU_INFO_RAS_ENABLED_UMC			(1 << 0)
+/* RAS MASK: SDMA */
+#define GSGPU_INFO_RAS_ENABLED_SDMA			(1 << 1)
+/* RAS MASK: GFX */
+#define GSGPU_INFO_RAS_ENABLED_GFX			(1 << 2)
+/* RAS MASK: MMHUB */
+#define GSGPU_INFO_RAS_ENABLED_MMHUB			(1 << 3)
+/* RAS MASK: ATHUB */
+#define GSGPU_INFO_RAS_ENABLED_ATHUB			(1 << 4)
+/* RAS MASK: PCIE */
+#define GSGPU_INFO_RAS_ENABLED_PCIE			(1 << 5)
+/* RAS MASK: HDP */
+#define GSGPU_INFO_RAS_ENABLED_HDP			(1 << 6)
+/* RAS MASK: XGMI */
+#define GSGPU_INFO_RAS_ENABLED_XGMI			(1 << 7)
+/* RAS MASK: DF */
+#define GSGPU_INFO_RAS_ENABLED_DF			(1 << 8)
+/* RAS MASK: SMN */
+#define GSGPU_INFO_RAS_ENABLED_SMN			(1 << 9)
+/* RAS MASK: SEM */
+#define GSGPU_INFO_RAS_ENABLED_SEM			(1 << 10)
+/* RAS MASK: MP0 */
+#define GSGPU_INFO_RAS_ENABLED_MP0			(1 << 11)
+/* RAS MASK: MP1 */
+#define GSGPU_INFO_RAS_ENABLED_MP1			(1 << 12)
+/* RAS MASK: FUSE */
+#define GSGPU_INFO_RAS_ENABLED_FUSE			(1 << 13)
+/* query video encode/decode caps */
+#define GSGPU_INFO_VIDEO_CAPS			0x21
+	/* Subquery id: Decode */
+	#define GSGPU_INFO_VIDEO_CAPS_DECODE		0
+	/* Subquery id: Encode */
+	#define GSGPU_INFO_VIDEO_CAPS_ENCODE		1
 
 #define GSGPU_INFO_MMR_SE_INDEX_SHIFT	0
 #define GSGPU_INFO_MMR_SE_INDEX_MASK	0xff
@@ -782,6 +938,10 @@ struct drm_gsgpu_info {
 		struct {
 			__u32 type;
 		} sensor_info;
+
+		struct {
+			__u32 type;
+		} video_cap;
 	};
 };
 
@@ -842,6 +1002,15 @@ struct drm_gsgpu_info_firmware {
 	__u32 feature;
 };
 
+struct drm_gsgpu_info_vbios {
+	__u8 name[64];
+	__u8 vbios_pn[64];
+	__u32 version;
+	__u32 pad;
+	__u8 vbios_ver_str[32];
+	__u8 date[32];
+};
+
 #define GSGPU_VRAM_TYPE_UNKNOWN 0
 #define GSGPU_VRAM_TYPE_GDDR1 1
 #define GSGPU_VRAM_TYPE_DDR2  2
@@ -851,6 +1020,10 @@ struct drm_gsgpu_info_firmware {
 #define GSGPU_VRAM_TYPE_HBM   6
 #define GSGPU_VRAM_TYPE_DDR3  7
 #define GSGPU_VRAM_TYPE_DDR4  8
+#define GSGPU_VRAM_TYPE_GDDR6 9
+#define GSGPU_VRAM_TYPE_DDR5  10
+#define GSGPU_VRAM_TYPE_LPDDR4 11
+#define GSGPU_VRAM_TYPE_LPDDR5 12
 
 struct drm_gsgpu_info_device {
 	/** PCI Device ID */
@@ -876,7 +1049,8 @@ struct drm_gsgpu_info_device {
 	__u32 enabled_rb_pipes_mask;
 	__u32 num_rb_pipes;
 	__u32 num_hw_gfx_contexts;
-	__u32 _pad;
+	/* PCIe version (the smaller of the GPU and the CPU/motherboard) */
+	__u32 pcie_gen;
 	__u64 ids_flags;
 	/** Starting virtual address for UMDs. */
 	__u64 virtual_address_offset;
@@ -923,13 +1097,30 @@ struct drm_gsgpu_info_device {
 	__u32 gs_prim_buffer_depth;
 	/* max gs wavefront per vgt*/
 	__u32 max_gs_waves_per_vgt;
-	__u32 _pad1;
+	/* PCIe number of lanes (the smaller of the GPU and the CPU/motherboard) */
+	__u32 pcie_num_lanes;
 	/* always on cu bitmap */
 	__u32 cu_ao_bitmap[4][4];
 	/** Starting high virtual address for UMDs. */
 	__u64 high_va_offset;
 	/** The maximum high virtual address */
 	__u64 high_va_max;
+	/* gfx10 pa_sc_tile_steering_override */
+	__u32 pa_sc_tile_steering_override;
+	/* disabled TCCs */
+	__u64 tcc_disabled_mask;
+	__u64 min_engine_clock;
+	__u64 min_memory_clock;
+	/* The following fields are only set on gfx11+, older chips set 0. */
+	__u32 tcp_cache_size;       /* AKA GL0, VMEM cache */
+	__u32 num_sqc_per_wgp;
+	__u32 sqc_data_cache_size;  /* AKA SMEM cache */
+	__u32 sqc_inst_cache_size;
+	__u32 gl1c_cache_size;
+	__u32 gl2c_cache_size;
+	__u64 mall_size;            /* AKA infinity cache */
+	/* high 32 bits of the rb pipes mask */
+	__u32 enabled_rb_pipes_mask_hi;
 };
 
 struct drm_gsgpu_info_hw_ip {
@@ -944,7 +1135,8 @@ struct drm_gsgpu_info_hw_ip {
 	__u32  ib_size_alignment;
 	/** Bitmask of available rings. Bit 0 means ring 0, etc. */
 	__u32  available_rings;
-	__u32  _pad;
+	/** version info: bits 23:16 major, 15:8 minor, 7:0 revision */
+	__u32  ip_discovery_version;
 };
 
 struct drm_gsgpu_info_num_handles {
@@ -952,24 +1144,6 @@ struct drm_gsgpu_info_num_handles {
 	__u32  uvd_max_handles;
 	/** Handles currently in use for UVD */
 	__u32  uvd_used_handles;
-};
-
-#define GSGPU_VCE_CLOCK_TABLE_ENTRIES		6
-
-struct drm_gsgpu_info_vce_clock_table_entry {
-	/** System clock */
-	__u32 sclk;
-	/** Memory clock */
-	__u32 mclk;
-	/** VCE clock */
-	__u32 eclk;
-	__u32 pad;
-};
-
-struct drm_gsgpu_info_vce_clock_table {
-	struct drm_gsgpu_info_vce_clock_table_entry entries[GSGPU_VCE_CLOCK_TABLE_ENTRIES];
-	__u32 num_valid_entries;
-	__u32 pad;
 };
 
 #define       GSGPU_HW_SEMA_GET         1
@@ -984,6 +1158,30 @@ struct drm_gsgpu_hw_sema {
     __u32 ops;
 };
 
+/* query video encode/decode caps */
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG2			0
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4			1
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_VC1			2
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4_AVC		3
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_HEVC			4
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_JPEG			5
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_VP9			6
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_AV1			7
+#define GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_COUNT			8
+
+struct drm_gsgpu_info_video_codec_info {
+	__u32 valid;
+	__u32 max_width;
+	__u32 max_height;
+	__u32 max_pixels_per_frame;
+	__u32 max_level;
+	__u32 pad;
+};
+
+struct drm_gsgpu_info_video_caps {
+	struct drm_gsgpu_info_video_codec_info codec_info[GSGPU_INFO_VIDEO_CAPS_CODEC_IDX_COUNT];
+};
+
 /*
  * Supported GPU families
  */
@@ -995,6 +1193,13 @@ struct drm_gsgpu_hw_sema {
 #define GSGPU_FAMILY_CZ			135 /* Carrizo, Stoney */
 #define GSGPU_FAMILY_AI			141 /* Vega10 */
 #define GSGPU_FAMILY_RV			142 /* Raven */
+#define GSGPU_FAMILY_NV			143 /* Navi10 */
+#define GSGPU_FAMILY_VGH			144 /* Van Gogh */
+#define GSGPU_FAMILY_GC_11_0_0			145 /* GC 11.0.0 */
+#define GSGPU_FAMILY_YC			146 /* Yellow Carp */
+#define GSGPU_FAMILY_GC_11_0_1			148 /* GC 11.0.1 */
+#define GSGPU_FAMILY_GC_10_3_6			149 /* GC 10.3.6 */
+#define GSGPU_FAMILY_GC_10_3_7			151 /* GC 10.3.7 */
 
 #if defined(__cplusplus)
 }

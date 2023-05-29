@@ -28,6 +28,20 @@
 #ifndef __GSGPU_H__
 #define __GSGPU_H__
 
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+
+#define pr_fmt(fmt) "gsgpu: " fmt
+
+#ifdef dev_fmt
+#undef dev_fmt
+#endif
+
+#define dev_fmt(fmt) "gsgpu: " fmt
+
+#include "gsgpu_ctx.h"
+
 #include <linux/atomic.h>
 #include <linux/wait.h>
 #include <linux/list.h>
@@ -35,17 +49,16 @@
 #include <linux/rbtree.h>
 #include <linux/hashtable.h>
 #include <linux/dma-fence.h>
+#include <linux/pci.h>
+#include <linux/aer.h>
 
-#include <drm/ttm/ttm_bo_api.h>
-#include <drm/ttm/ttm_bo_driver.h>
+#include <drm/ttm/ttm_bo.h>
 #include <drm/ttm/ttm_placement.h>
-#include <drm/ttm/ttm_module.h>
 #include <drm/ttm/ttm_execbuf_util.h>
 
-#include <drm/drmP.h>
-#include <drm/drm_gem.h>
 #include <drm/gsgpu_drm.h>
-#include <drm/gpu_scheduler.h>
+#include <drm/drm_gem.h>
+#include <drm/drm_ioctl.h>
 
 #include "gsgpu_shared.h"
 #include "gsgpu_mode.h"
@@ -55,42 +68,91 @@
 #include "gsgpu_sync.h"
 #include "gsgpu_ring.h"
 #include "gsgpu_vm.h"
-#include "gsgpu_mn.h"
 #include "gsgpu_gmc.h"
+#include "gsgpu_gem.h"
+#include "gsgpu_gfx.h"
+#include "gsgpu_xdma.h"
 #include "gsgpu_dc.h"
 #include "gsgpu_gart.h"
-#include "gsgpu_zip_meta.h"
 #include "gsgpu_debugfs.h"
 #include "gsgpu_job.h"
 #include "gsgpu_bo_list.h"
+#include "gsgpu_zip_meta.h"
 #include "gsgpu_hw_sema.h"
+
+#define MAX_GPU_INSTANCE		16
+
+struct gsgpu_gpu_instance
+{
+	struct gsgpu_device		*adev;
+	int				mgpu_fan_enabled;
+};
+
+struct gsgpu_mgpu_info
+{
+	struct gsgpu_gpu_instance	gpu_ins[MAX_GPU_INSTANCE];
+	struct mutex			mutex;
+	uint32_t			num_gpu;
+	uint32_t			num_dgpu;
+	uint32_t			num_apu;
+
+	/* delayed reset_func for XGMI configuration if necessary */
+	struct delayed_work		delayed_reset_work;
+	bool				pending_reset;
+};
+
+enum gsgpu_ss {
+	GSGPU_SS_DRV_LOAD,
+	GSGPU_SS_DEV_D0,
+	GSGPU_SS_DEV_D3,
+	GSGPU_SS_DRV_UNLOAD
+};
+
+struct gsgpu_watchdog_timer
+{
+	bool timeout_fatal_disable;
+	uint32_t period; /* maxCycles = (1 << period), the number of cycles before a timeout */
+};
+
+#define GSGPU_MAX_TIMEOUT_PARAM_LENGTH	256
 
 /*
  * Modules parameters.
  */
 extern int gsgpu_modeset;
-extern int gsgpu_vram_limit;
+extern unsigned int gsgpu_vram_limit;
 extern int gsgpu_vis_vram_limit;
 extern int gsgpu_gart_size;
 extern int gsgpu_gtt_size;
 extern int gsgpu_moverate;
-extern int gsgpu_benchmarking;
-extern int gsgpu_testing;
 extern int gsgpu_disp_priority;
 extern int gsgpu_msi;
-extern int gsgpu_lockup_timeout;
-extern int gsgpu_runtime_pm;
+extern char gsgpu_lockup_timeout[GSGPU_MAX_TIMEOUT_PARAM_LENGTH];
 extern int gsgpu_vm_size;
 extern int gsgpu_vm_block_size;
-extern int gsgpu_vm_fragment_size;
 extern int gsgpu_vm_fault_stop;
 extern int gsgpu_vm_debug;
 extern int gsgpu_vm_update_mode;
+extern int gsgpu_exp_hw_support;
 extern int gsgpu_sched_jobs;
 extern int gsgpu_sched_hw_submission;
-extern int gsgpu_vram_page_split;
+extern uint gsgpu_force_long_training;
 extern int gsgpu_job_hang_limit;
-extern int gsgpu_gpu_recovery;
+
+extern uint gsgpu_dm_abm_level;
+extern int gsgpu_backlight;
+extern struct gsgpu_mgpu_info mgpu_info;
+
+extern int gsgpu_bad_page_threshold;
+extern bool gsgpu_ignore_bad_page_threshold;
+extern struct gsgpu_watchdog_timer gsgpu_watchdog_timer;
+
+extern int gsgpu_noretry;
+
+static const bool __maybe_unused debug_evictions; /* = false */
+static const bool __maybe_unused no_system_mem_limit;
+static const int __maybe_unused halt_if_hws_hang;
+
 extern int gsgpu_using_ram;
 
 #define GSGPU_BYTES_PER_DW           4
@@ -99,48 +161,43 @@ extern int gsgpu_using_ram;
 #define GSGPU_MB_SHIFT_BITS          20
 #define GSGPU_GB_SHIFT_BITS          30
 
+#define GSGPU_VM_MAX_NUM_CTX			4096
 #define GSGPU_SG_THRESHOLD			(256*1024*1024)
 #define GSGPU_DEFAULT_GTT_SIZE_MB		3072ULL /* 3GB by default */
 #define GSGPU_WAIT_IDLE_TIMEOUT_IN_MS	        3000
 #define GSGPU_MAX_USEC_TIMEOUT			100000	/* 100 ms */
 #define GSGPU_FENCE_JIFFIES_TIMEOUT		(HZ / 2)
-/* GSGPU_IB_POOL_SIZE must be a power of 2 */
-#define GSGPU_IB_POOL_SIZE			16
 #define GSGPU_DEBUGFS_MAX_COMPONENTS		32
 #define GSGPUFB_CONN_LIMIT			4
 #define GSGPU_BIOS_NUM_SCRATCH			16
 
-/* max number of IP instances */
-#define GSGPU_MAX_XDMA_INSTANCES		2
+#define GSGPU_VBIOS_VGA_ALLOCATION		(9 * 1024 * 1024) /* reserve 8MB for vga emulator and 1 MB for FB */
 
 /* hard reset data */
 #define GSGPU_ASIC_RESET_DATA                  0x39d5e86b
 
-/* GFX current status */
-#define GSGPU_GFX_NORMAL_MODE			0x00000000L
-#define GSGPU_GFX_SAFE_MODE			0x00000001L
-#define GSGPU_GFX_PG_DISABLED_MODE		0x00000002L
-#define GSGPU_GFX_CG_DISABLED_MODE		0x00000004L
-#define GSGPU_GFX_LBPW_DISABLED_MODE		0x00000008L
+/* smart shift bias level limits */
+#define GSGPU_SMARTSHIFT_MAX_BIAS (100)
+#define GSGPU_SMARTSHIFT_MIN_BIAS (-100)
 
 struct gsgpu_device;
-struct gsgpu_ib;
-struct gsgpu_cs_parser;
-struct gsgpu_job;
 struct gsgpu_irq_src;
 struct gsgpu_fpriv;
 struct gsgpu_bo_va_mapping;
+struct kfd_vm_fault_info;
+struct gsgpu_reset_context;
+struct gsgpu_reset_control;
 
 enum gsgpu_cp_irq {
-	GSGPU_CP_IRQ_GFX_EOP = 0,
+	GSGPU_CP_IRQ_GFX_ME0_PIPE0_EOP = 0,
+	GSGPU_CP_IRQ_GFX_ME0_PIPE1_EOP,
 	GSGPU_CP_IRQ_LAST
 };
 
-enum gsgpu_xdma_irq {
-	GSGPU_XDMA_IRQ_TRAP0 = 0,
-	GSGPU_XDMA_IRQ_TRAP1,
-	GSGPU_XDMA_IRQ_LAST
-};
+#define SRIOV_USEC_TIMEOUT  1200000 /* wait 12 * 100ms for SRIOV */
+#define MAX_KIQ_REG_WAIT       5000 /* in usecs, 5ms */
+#define MAX_KIQ_REG_BAILOUT_INTERVAL   5 /* in msecs, 5ms */
+#define MAX_KIQ_REG_TRY 1000
 
 int gsgpu_device_ip_wait_for_idle(struct gsgpu_device *adev,
 				   enum gsgpu_ip_block_type block_type);
@@ -165,6 +222,9 @@ struct gsgpu_ip_block_version {
 	const struct gsgpu_ip_funcs *funcs;
 };
 
+#define HW_REV(_Major, _Minor, _Rev) \
+	((((uint32_t) (_Major)) << 16) | ((uint32_t) (_Minor) << 8) | ((uint32_t) (_Rev)))
+
 struct gsgpu_ip_block {
 	struct gsgpu_ip_block_status status;
 	const struct gsgpu_ip_block_version *version;
@@ -181,79 +241,13 @@ gsgpu_device_ip_get_ip_block(struct gsgpu_device *adev,
 int gsgpu_device_ip_block_add(struct gsgpu_device *adev,
 			       const struct gsgpu_ip_block_version *ip_block_version);
 
-/* provided by hw blocks that can move/clear data.  e.g., gfx or xdma */
-struct gsgpu_buffer_funcs {
-	/* maximum bytes in a single operation */
-	uint32_t	copy_max_bytes;
-
-	/* number of dw to reserve per operation */
-	unsigned	copy_num_dw;
-
-	/* used for buffer migration */
-	void (*emit_copy_buffer)(struct gsgpu_ib *ib,
-				 /* src addr in bytes */
-				 uint64_t src_offset,
-				 /* dst addr in bytes */
-				 uint64_t dst_offset,
-				 /* number of byte to transfer */
-				 uint32_t byte_count);
-
-	/* maximum bytes in a single operation */
-	uint32_t	fill_max_bytes;
-
-	/* number of dw to reserve per operation */
-	unsigned	fill_num_dw;
-
-	/* used for buffer clearing */
-	void (*emit_fill_buffer)(struct gsgpu_ib *ib,
-				 /* value to write to memory */
-				 uint32_t src_data,
-				 /* dst addr in bytes */
-				 uint64_t dst_offset,
-				 /* number of byte to fill */
-				 uint32_t byte_count);
-};
-
-/* provided by hw blocks that can write ptes, e.g., xdma */
-struct gsgpu_vm_pte_funcs {
-	/* number of dw to reserve per operation */
-	unsigned	copy_pte_num_dw;
-
-	/* number of dw to reserve per operation */
-	unsigned	set_pte_pde_num_dw;
-
-	/* copy pte entries from GART */
-	void (*copy_pte)(struct gsgpu_ib *ib,
-			 uint64_t pe, uint64_t src,
-			 unsigned count);
-
-	/* write pte one entry at a time with addr mapping */
-	void (*write_pte)(struct gsgpu_ib *ib, uint64_t pe,
-			  uint64_t value, unsigned count,
-			  uint32_t incr);
-	/* for linear pte/pde updates without addr mapping */
-	void (*set_pte_pde)(struct gsgpu_ib *ib,
-			    uint64_t pe,
-			    uint64_t addr, unsigned count,
-			    uint32_t incr, uint64_t flags);
-};
-
-/* provided by the ih block */
-struct gsgpu_ih_funcs {
-	/* ring read/write ptr handling, called from interrupt context */
-	u32 (*get_wptr)(struct gsgpu_device *adev);
-	bool (*prescreen_iv)(struct gsgpu_device *adev);
-	void (*decode_iv)(struct gsgpu_device *adev,
-			  struct gsgpu_iv_entry *entry);
-	void (*set_rptr)(struct gsgpu_device *adev);
-};
-
 /*
  * BIOS.
  */
 bool gsgpu_get_bios(struct gsgpu_device *adev);
 bool gsgpu_read_bios(struct gsgpu_device *adev);
-
+bool gsgpu_soc15_read_bios_from_rom(struct gsgpu_device *adev,
+				     u8 *bios, u32 length_bytes);
 /*
  * Clocks
  */
@@ -269,34 +263,6 @@ struct gsgpu_clock {
 	uint32_t dp_extclk;
 	uint32_t max_pixel_clock;
 };
-
-/*
- * GEM.
- */
-
-#define GSGPU_GEM_DOMAIN_MAX		0x3
-#define gem_to_gsgpu_bo(gobj) container_of((gobj), struct gsgpu_bo, gem_base)
-
-void gsgpu_gem_object_free(struct drm_gem_object *obj);
-int gsgpu_gem_object_open(struct drm_gem_object *obj,
-				struct drm_file *file_priv);
-void gsgpu_gem_object_close(struct drm_gem_object *obj,
-				struct drm_file *file_priv);
-unsigned long gsgpu_gem_timeout(uint64_t timeout_ns);
-struct sg_table *gsgpu_gem_prime_get_sg_table(struct drm_gem_object *obj);
-struct drm_gem_object *
-gsgpu_gem_prime_import_sg_table(struct drm_device *dev,
-				 struct dma_buf_attachment *attach,
-				 struct sg_table *sg);
-struct dma_buf *gsgpu_gem_prime_export(struct drm_device *dev,
-					struct drm_gem_object *gobj,
-					int flags);
-struct drm_gem_object *gsgpu_gem_prime_import(struct drm_device *dev,
-					    struct dma_buf *dma_buf);
-struct reservation_object *gsgpu_gem_prime_res_obj(struct drm_gem_object *);
-void *gsgpu_gem_prime_vmap(struct drm_gem_object *obj);
-void gsgpu_gem_prime_vunmap(struct drm_gem_object *obj, void *vaddr);
-int gsgpu_gem_prime_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
 
 /* sub-allocation manager, it has to be protected by another lock.
  * By conception this is an helper for other part of the driver
@@ -347,22 +313,6 @@ struct gsgpu_sa_bo {
 	struct dma_fence	        *fence;
 };
 
-/*
- * GEM objects.
- */
-void gsgpu_gem_force_release(struct gsgpu_device *adev);
-int gsgpu_gem_object_create(struct gsgpu_device *adev, unsigned long size,
-			     int alignment, u32 initial_domain,
-			     u64 flags, enum ttm_bo_type type,
-			     struct reservation_object *resv,
-			     struct drm_gem_object **obj);
-
-int gsgpu_mode_dumb_create(struct drm_file *file_priv,
-			    struct drm_device *dev,
-			    struct drm_mode_create_dumb *args);
-int gsgpu_mode_dumb_mmap(struct drm_file *filp,
-			  struct drm_device *dev,
-			  uint32_t handle, uint64_t *offset_p);
 int gsgpu_fence_slab_init(void);
 void gsgpu_fence_slab_fini(void);
 
@@ -482,104 +432,11 @@ struct gsgpu_flip_work {
 	uint64_t			base;
 	struct drm_pending_vblank_event *event;
 	struct gsgpu_bo		*old_abo;
-	struct dma_fence		*excl;
 	unsigned			shared_count;
 	struct dma_fence		**shared;
 	struct dma_fence_cb		cb;
 	bool				async;
 };
-
-
-/*
- * CP & rings.
- */
-
-struct gsgpu_ib {
-	struct gsgpu_sa_bo		*sa_bo;
-	uint32_t			length_dw;
-	uint64_t			gpu_addr;
-	uint32_t			*ptr;
-	uint32_t			flags;
-};
-
-extern const struct drm_sched_backend_ops gsgpu_sched_ops;
-
-/*
- * Queue manager
- */
-struct gsgpu_queue_mapper {
-	int 		hw_ip;
-	struct mutex	lock;
-	/* protected by lock */
-	struct gsgpu_ring *queue_map[GSGPU_MAX_RINGS];
-};
-
-struct gsgpu_queue_mgr {
-	struct gsgpu_queue_mapper mapper[GSGPU_MAX_IP_NUM];
-};
-
-int gsgpu_queue_mgr_init(struct gsgpu_device *adev,
-			  struct gsgpu_queue_mgr *mgr);
-int gsgpu_queue_mgr_fini(struct gsgpu_device *adev,
-			  struct gsgpu_queue_mgr *mgr);
-int gsgpu_queue_mgr_map(struct gsgpu_device *adev,
-			 struct gsgpu_queue_mgr *mgr,
-			 u32 hw_ip, u32 instance, u32 ring,
-			 struct gsgpu_ring **out_ring);
-
-/*
- * context related structures
- */
-
-struct gsgpu_ctx_ring {
-	uint64_t		sequence;
-	struct dma_fence	**fences;
-	struct drm_sched_entity	entity;
-};
-
-struct gsgpu_ctx {
-	struct kref		refcount;
-	struct gsgpu_device    *adev;
-	struct gsgpu_queue_mgr queue_mgr;
-	unsigned		reset_counter;
-	unsigned        reset_counter_query;
-	uint32_t		vram_lost_counter;
-	spinlock_t		ring_lock;
-	struct dma_fence	**fences;
-	struct gsgpu_ctx_ring	rings[GSGPU_MAX_RINGS];
-	bool			preamble_presented;
-	enum drm_sched_priority init_priority;
-	enum drm_sched_priority override_priority;
-	struct mutex            lock;
-	atomic_t	guilty;
-};
-
-struct gsgpu_ctx_mgr {
-	struct gsgpu_device	*adev;
-	struct mutex		lock;
-	/* protected by lock */
-	struct idr		ctx_handles;
-};
-
-struct gsgpu_ctx *gsgpu_ctx_get(struct gsgpu_fpriv *fpriv, uint32_t id);
-int gsgpu_ctx_put(struct gsgpu_ctx *ctx);
-
-int gsgpu_ctx_add_fence(struct gsgpu_ctx *ctx, struct gsgpu_ring *ring,
-			      struct dma_fence *fence, uint64_t *seq);
-struct dma_fence *gsgpu_ctx_get_fence(struct gsgpu_ctx *ctx,
-				   struct gsgpu_ring *ring, uint64_t seq);
-void gsgpu_ctx_priority_override(struct gsgpu_ctx *ctx,
-				  enum drm_sched_priority priority);
-
-int gsgpu_ctx_ioctl(struct drm_device *dev, void *data,
-		     struct drm_file *filp);
-
-int gsgpu_ctx_wait_prev_fence(struct gsgpu_ctx *ctx, unsigned ring_id);
-
-void gsgpu_ctx_mgr_init(struct gsgpu_ctx_mgr *mgr);
-void gsgpu_ctx_mgr_entity_fini(struct gsgpu_ctx_mgr *mgr);
-void gsgpu_ctx_mgr_entity_flush(struct gsgpu_ctx_mgr *mgr);
-void gsgpu_ctx_mgr_fini(struct gsgpu_ctx_mgr *mgr);
 
 
 /*
@@ -595,246 +452,12 @@ struct gsgpu_fpriv {
 	struct gsgpu_ctx_mgr	ctx_mgr;
 };
 
-struct gsgpu_rlc_funcs {
-	void (*enter_safe_mode)(struct gsgpu_device *adev);
-	void (*exit_safe_mode)(struct gsgpu_device *adev);
-};
-
-struct gsgpu_rlc {
-	/* for power gating */
-	struct gsgpu_bo	*save_restore_obj;
-	uint64_t		save_restore_gpu_addr;
-	volatile uint32_t	*sr_ptr;
-	const u32               *reg_list;
-	u32                     reg_list_size;
-	/* for clear state */
-	struct gsgpu_bo	*clear_state_obj;
-	uint64_t		clear_state_gpu_addr;
-	volatile uint32_t	*cs_ptr;
-	const struct cs_section_def   *cs_data;
-	u32                     clear_state_size;
-	/* for cp tables */
-	struct gsgpu_bo	*cp_table_obj;
-	uint64_t		cp_table_gpu_addr;
-	volatile uint32_t	*cp_table_ptr;
-	u32                     cp_table_size;
-
-	/* safe mode for updating CG/PG state */
-	bool in_safe_mode;
-	const struct gsgpu_rlc_funcs *funcs;
-
-	/* for firmware data */
-	u32 save_and_restore_offset;
-	u32 clear_state_descriptor_offset;
-	u32 avail_scratch_ram_locations;
-	u32 reg_restore_list_size;
-	u32 reg_list_format_start;
-	u32 reg_list_format_separate_start;
-	u32 starting_offsets_start;
-	u32 reg_list_format_size_bytes;
-	u32 reg_list_size_bytes;
-	u32 reg_list_format_direct_reg_list_length;
-	u32 save_restore_list_cntl_size_bytes;
-	u32 save_restore_list_gpm_size_bytes;
-	u32 save_restore_list_srm_size_bytes;
-
-	u32 *register_list_format;
-	u32 *register_restore;
-	u8 *save_restore_list_cntl;
-	u8 *save_restore_list_gpm;
-	u8 *save_restore_list_srm;
-
-	bool is_rlc_v2_1;
-};
-
-/*
- * GFX configurations
- */
-#define GSGPU_GFX_MAX_SE 4
-#define GSGPU_GFX_MAX_SH_PER_SE 2
-
-struct gsgpu_rb_config {
-	uint32_t rb_backend_disable;
-	uint32_t user_rb_backend_disable;
-	uint32_t raster_config;
-	uint32_t raster_config_1;
-};
-
-struct gb_addr_config {
-	uint16_t pipe_interleave_size;
-	uint8_t num_pipes;
-	uint8_t max_compress_frags;
-	uint8_t num_banks;
-	uint8_t num_se;
-	uint8_t num_rb_per_se;
-};
-
-struct gsgpu_gfx_config {
-	unsigned max_shader_engines;
-	unsigned max_tile_pipes;
-	unsigned max_cu_per_sh;
-	unsigned max_sh_per_se;
-	unsigned max_backends_per_se;
-	unsigned max_texture_channel_caches;
-	unsigned max_gprs;
-	unsigned max_gs_threads;
-	unsigned max_hw_contexts;
-	unsigned sc_prim_fifo_size_frontend;
-	unsigned sc_prim_fifo_size_backend;
-	unsigned sc_hiz_tile_fifo_size;
-	unsigned sc_earlyz_tile_fifo_size;
-
-	unsigned num_tile_pipes;
-	unsigned backend_enable_mask;
-	unsigned mem_max_burst_length_bytes;
-	unsigned mem_row_size_in_kb;
-	unsigned shader_engine_tile_size;
-	unsigned num_gpus;
-	unsigned multi_gpu_tile_size;
-	unsigned mc_arb_ramcfg;
-	unsigned gb_addr_config;
-	unsigned num_rbs;
-	unsigned gs_vgt_table_depth;
-	unsigned gs_prim_buffer_depth;
-
-	uint32_t tile_mode_array[32];
-	uint32_t macrotile_mode_array[16];
-
-	struct gb_addr_config gb_addr_config_fields;
-	struct gsgpu_rb_config rb_config[GSGPU_GFX_MAX_SE][GSGPU_GFX_MAX_SH_PER_SE];
-
-	/* gfx configure feature */
-	uint32_t double_offchip_lds_buf;
-	/* cached value of DB_DEBUG2 */
-	uint32_t db_debug2;
-};
-
-struct gsgpu_cu_info {
-	uint32_t simd_per_cu;
-	uint32_t max_waves_per_simd;
-	uint32_t wave_front_size;
-	uint32_t max_scratch_slots_per_cu;
-	uint32_t lds_size;
-
-	/* total active CU number */
-	uint32_t number;
-	uint32_t ao_cu_mask;
-	uint32_t ao_cu_bitmap[4][4];
-	uint32_t bitmap[4][4];
-};
-
-struct gsgpu_gfx_funcs {
-	/* get the gpu clock counter */
-	uint64_t (*get_gpu_clock_counter)(struct gsgpu_device *adev);
-	void (*read_wave_data)(struct gsgpu_device *adev, uint32_t simd, uint32_t wave, uint32_t *dst, int *no_fields);
-	void (*read_wave_vgprs)(struct gsgpu_device *adev, uint32_t simd, uint32_t wave, uint32_t thread, uint32_t start, uint32_t size, uint32_t *dst);
-	void (*read_wave_sgprs)(struct gsgpu_device *adev, uint32_t simd, uint32_t wave, uint32_t start, uint32_t size, uint32_t *dst);
-	void (*select_me_pipe_q)(struct gsgpu_device *adev, u32 me, u32 pipe, u32 queue);
-};
-
-struct sq_work {
-	struct work_struct	work;
-	unsigned ih_data;
-};
-
-struct gsgpu_gfx {
-	struct mutex			gpu_clock_mutex;
-	struct gsgpu_gfx_config		config;
-	struct gsgpu_rlc		rlc;
-	const struct firmware		*cp_fw;	/* CP firmware */
-	uint32_t			cp_fw_version;
-	uint32_t			cp_feature_version;
-	struct gsgpu_ring		gfx_ring[GSGPU_MAX_GFX_RINGS];
-	unsigned			num_gfx_rings;
-	struct gsgpu_irq_src		eop_irq;
-	struct gsgpu_irq_src		priv_reg_irq;
-	struct gsgpu_irq_src		priv_inst_irq;
-	struct gsgpu_irq_src		cp_ecc_error_irq;
-
-	/* gfx status */
-	uint32_t			gfx_current_status;
-	/* ce ram size*/
-	unsigned			ce_ram_size;
-	struct gsgpu_cu_info		cu_info;
-	const struct gsgpu_gfx_funcs	*funcs;
-
-	/* reset mask */
-	uint32_t                        grbm_soft_reset;
-	uint32_t                        srbm_soft_reset;
-	/* s3/s4 mask */
-	bool                            in_suspend;
-};
-
-int gsgpu_ib_get(struct gsgpu_device *adev, struct gsgpu_vm *vm,
-		  unsigned size, struct gsgpu_ib *ib);
-void gsgpu_ib_free(struct gsgpu_device *adev, struct gsgpu_ib *ib,
-		    struct dma_fence *f);
-int gsgpu_ib_schedule(struct gsgpu_ring *ring, unsigned num_ibs,
-		       struct gsgpu_ib *ibs, struct gsgpu_job *job,
-		       struct dma_fence **f);
-int gsgpu_ib_pool_init(struct gsgpu_device *adev);
-void gsgpu_ib_pool_fini(struct gsgpu_device *adev);
-int gsgpu_ib_ring_tests(struct gsgpu_device *adev);
-
-/*
- * CS.
- */
-struct gsgpu_cs_chunk {
-	uint32_t		chunk_id;
-	uint32_t		length_dw;
-	void			*kdata;
-};
-
-struct gsgpu_cs_parser {
-	struct gsgpu_device	*adev;
-	struct drm_file		*filp;
-	struct gsgpu_ctx	*ctx;
-
-	/* chunks */
-	unsigned		nchunks;
-	struct gsgpu_cs_chunk	*chunks;
-
-	/* scheduler job object */
-	struct gsgpu_job	*job;
-	struct gsgpu_ring	*ring;
-
-	/* buffer objects */
-	struct ww_acquire_ctx		ticket;
-	struct gsgpu_bo_list		*bo_list;
-	struct gsgpu_mn		*mn;
-	struct gsgpu_bo_list_entry	vm_pd;
-	struct list_head		validated;
-	struct dma_fence		*fence;
-	uint64_t			bytes_moved_threshold;
-	uint64_t			bytes_moved_vis_threshold;
-	uint64_t			bytes_moved;
-	uint64_t			bytes_moved_vis;
-	struct gsgpu_bo_list_entry	*evictable;
-
-	/* user fence */
-	struct gsgpu_bo_list_entry	uf_entry;
-
-	unsigned num_post_dep_syncobjs;
-	struct drm_syncobj **post_dep_syncobjs;
-};
-
-static inline u32 gsgpu_get_ib_value(struct gsgpu_cs_parser *p,
-				      uint32_t ib_idx, int idx)
-{
-	return p->job->ibs[ib_idx].ptr[idx];
-}
-
-static inline void gsgpu_set_ib_value(struct gsgpu_cs_parser *p,
-				       uint32_t ib_idx, int idx,
-				       uint32_t value)
-{
-	p->job->ibs[ib_idx].ptr[idx] = value;
-}
+int gsgpu_file_to_fpriv(struct file *filp, struct gsgpu_fpriv **fpriv);
 
 /*
  * Writeback
  */
-#define GSGPU_MAX_WB 128	/* Reserve at most 128 WB slots for gsgpu-owned rings. */
+#define GSGPU_MAX_WB 256	/* Reserve at most 256 WB slots for gsgpu-owned rings. */
 
 struct gsgpu_wb {
 	struct gsgpu_bo	*wb_obj;
@@ -848,60 +471,47 @@ int gsgpu_device_wb_get(struct gsgpu_device *adev, u32 *wb);
 void gsgpu_device_wb_free(struct gsgpu_device *adev, u32 wb);
 
 /*
- * SDMA
- */
-struct gsgpu_xdma_instance {
-	/* SDMA firmware */
-	const struct firmware	*fw;
-	uint32_t		fw_version;
-	uint32_t		feature_version;
-
-	struct gsgpu_ring	ring;
-	bool			burst_nop;
-};
-
-struct gsgpu_xdma {
-	struct gsgpu_xdma_instance instance[GSGPU_MAX_XDMA_INSTANCES];
-	struct gsgpu_irq_src	trap_irq;
-	struct gsgpu_irq_src	illegal_inst_irq;
-	int			num_instances;
-	uint32_t                    srbm_soft_reset;
-};
-
-/*
- * Firmware
- */
-enum gsgpu_firmware_load_type {
-	GSGPU_FW_LOAD_DIRECT = 0,
-	GSGPU_FW_LOAD_SMU,
-	GSGPU_FW_LOAD_PSP,
-};
-
-struct gsgpu_firmware {
-	enum gsgpu_firmware_load_type load_type;
-	struct gsgpu_bo *fw_buf;
-	unsigned int fw_size;
-	unsigned int max_ucodes;
-	struct gsgpu_bo *rbuf;
-	struct mutex mutex;
-
-	/* gpu info firmware data pointer */
-	const struct firmware *gpu_info_fw;
-
-	void *fw_buf_ptr;
-	uint64_t fw_buf_mc;
-};
-
-/*
  * Benchmarking
  */
-void gsgpu_benchmark(struct gsgpu_device *adev, int test_number);
-
+int gsgpu_benchmark(struct gsgpu_device *adev, int test_number);
 
 /*
- * Testing
+ * ASIC specific register table accessible by UMD
  */
-void gsgpu_test_moves(struct gsgpu_device *adev);
+struct gsgpu_allowed_register_entry {
+	uint32_t reg_offset;
+	bool grbm_indexed;
+};
+
+enum gsgpu_reset_method {
+	GSGPU_RESET_METHOD_NONE = -1,
+	GSGPU_RESET_METHOD_LEGACY = 0,
+	GSGPU_RESET_METHOD_MODE0,
+	GSGPU_RESET_METHOD_MODE1,
+	GSGPU_RESET_METHOD_MODE2,
+	GSGPU_RESET_METHOD_BACO,
+	GSGPU_RESET_METHOD_PCI,
+};
+
+struct gsgpu_video_codec_info {
+	u32 codec_type;
+	u32 max_width;
+	u32 max_height;
+	u32 max_pixels_per_frame;
+	u32 max_level;
+};
+
+#define codec_info_build(type, width, height, level) \
+			 .codec_type = type,\
+			 .max_width = width,\
+			 .max_height = height,\
+			 .max_pixels_per_frame = height * width,\
+			 .max_level = level,
+
+struct gsgpu_video_codecs {
+	const u32 codec_count;
+	const struct gsgpu_video_codec_info *codec_array;
+};
 
 /*
  * ASIC specific functions.
@@ -925,23 +535,9 @@ struct gsgpu_asic_funcs {
 /*
  * IOCTL.
  */
-int gsgpu_gem_create_ioctl(struct drm_device *dev, void *data,
-			    struct drm_file *filp);
 int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *filp);
 
-int gsgpu_gem_info_ioctl(struct drm_device *dev, void *data,
-			  struct drm_file *filp);
-int gsgpu_gem_userptr_ioctl(struct drm_device *dev, void *data,
-			struct drm_file *filp);
-int gsgpu_gem_mmap_ioctl(struct drm_device *dev, void *data,
-			  struct drm_file *filp);
-int gsgpu_gem_wait_idle_ioctl(struct drm_device *dev, void *data,
-			      struct drm_file *filp);
-int gsgpu_gem_va_ioctl(struct drm_device *dev, void *data,
-			  struct drm_file *filp);
-int gsgpu_gem_op_ioctl(struct drm_device *dev, void *data,
-			struct drm_file *filp);
 int gsgpu_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp);
 int gsgpu_cs_fence_to_handle_ioctl(struct drm_device *dev, void *data,
 				    struct drm_file *filp);
@@ -949,26 +545,13 @@ int gsgpu_cs_wait_ioctl(struct drm_device *dev, void *data, struct drm_file *fil
 int gsgpu_cs_wait_fences_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *filp);
 
-int gsgpu_gem_metadata_ioctl(struct drm_device *dev, void *data,
-				struct drm_file *filp);
-
 int gsgpu_hw_sema_op_ioctl(struct drm_device *dev, void *data, struct drm_file *filp);
 
 /* VRAM scratch page for HDP bug, default vram page */
-struct gsgpu_vram_scratch {
+struct gsgpu_mem_scratch {
 	struct gsgpu_bo		*robj;
 	volatile uint32_t		*ptr;
 	u64				gpu_addr;
-};
-
-/*
- * Firmware VRAM reservation
- */
-struct gsgpu_fw_vram_usage {
-	u64 start_offset;
-	u64 size;
-	struct gsgpu_bo *reserved_bo;
-	void *va;
 };
 
 /*
@@ -977,8 +560,16 @@ struct gsgpu_fw_vram_usage {
 typedef uint32_t (*gsgpu_rreg_t)(struct gsgpu_device*, uint32_t);
 typedef void (*gsgpu_wreg_t)(struct gsgpu_device*, uint32_t, uint32_t);
 
+typedef uint64_t (*gsgpu_rreg64_t)(struct gsgpu_device*, uint32_t);
+typedef void (*gsgpu_wreg64_t)(struct gsgpu_device*, uint32_t, uint64_t);
+
 typedef uint32_t (*gsgpu_block_rreg_t)(struct gsgpu_device*, uint32_t, uint32_t);
 typedef void (*gsgpu_block_wreg_t)(struct gsgpu_device*, uint32_t, uint32_t, uint32_t);
+
+struct gsgpu_mmio_remap {
+	u32 reg_offset;
+	resource_size_t bus_addr;
+};
 
 /* Define the HW IP blocks will be used in driver , add more if necessary */
 enum gsgpu_hw_ip_block_type {
@@ -986,6 +577,13 @@ enum gsgpu_hw_ip_block_type {
 	HDP_HWIP,
 	SDMA0_HWIP,
 	SDMA1_HWIP,
+	SDMA2_HWIP,
+	SDMA3_HWIP,
+	SDMA4_HWIP,
+	SDMA5_HWIP,
+	SDMA6_HWIP,
+	SDMA7_HWIP,
+	LSDMA_HWIP,
 	MMHUB_HWIP,
 	ATHUB_HWIP,
 	NBIO_HWIP,
@@ -993,6 +591,8 @@ enum gsgpu_hw_ip_block_type {
 	MP1_HWIP,
 	UVD_HWIP,
 	VCN_HWIP = UVD_HWIP,
+	JPEG_HWIP = VCN_HWIP,
+	VCN1_HWIP,
 	VCE_HWIP,
 	DF_HWIP,
 	DCE_HWIP,
@@ -1002,16 +602,85 @@ enum gsgpu_hw_ip_block_type {
 	NBIF_HWIP,
 	THM_HWIP,
 	CLK_HWIP,
+	UMC_HWIP,
+	RSMU_HWIP,
+	XGMI_HWIP,
+	DCI_HWIP,
+	PCIE_HWIP,
 	MAX_HWIP
 };
 
-#define HWIP_MAX_INSTANCE	6
+#define HWIP_MAX_INSTANCE	28
+
+#define HW_ID_MAX		300
+#define IP_VERSION(mj, mn, rv) (((mj) << 16) | ((mn) << 8) | (rv))
+#define IP_VERSION_MAJ(ver) ((ver) >> 16)
+#define IP_VERSION_MIN(ver) (((ver) >> 8) & 0xFF)
+#define IP_VERSION_REV(ver) ((ver) & 0xFF)
+
+struct ip_discovery_top;
+
+/* polaris10 kickers */
+#define ASICID_IS_P20(did, rid)		(((did == 0x67DF) && \
+					 ((rid == 0xE3) || \
+					  (rid == 0xE4) || \
+					  (rid == 0xE5) || \
+					  (rid == 0xE7) || \
+					  (rid == 0xEF))) || \
+					 ((did == 0x6FDF) && \
+					 ((rid == 0xE7) || \
+					  (rid == 0xEF) || \
+					  (rid == 0xFF))))
+
+#define ASICID_IS_P30(did, rid)		((did == 0x67DF) && \
+					((rid == 0xE1) || \
+					 (rid == 0xF7)))
+
+/* polaris11 kickers */
+#define ASICID_IS_P21(did, rid)		(((did == 0x67EF) && \
+					 ((rid == 0xE0) || \
+					  (rid == 0xE5))) || \
+					 ((did == 0x67FF) && \
+					 ((rid == 0xCF) || \
+					  (rid == 0xEF) || \
+					  (rid == 0xFF))))
+
+#define ASICID_IS_P31(did, rid)		((did == 0x67EF) && \
+					((rid == 0xE2)))
+
+/* polaris12 kickers */
+#define ASICID_IS_P23(did, rid)		(((did == 0x6987) && \
+					 ((rid == 0xC0) || \
+					  (rid == 0xC1) || \
+					  (rid == 0xC3) || \
+					  (rid == 0xC7))) || \
+					 ((did == 0x6981) && \
+					 ((rid == 0x00) || \
+					  (rid == 0x01) || \
+					  (rid == 0x10))))
 
 #define GSGPU_RESET_MAGIC_NUM 64
+#define GSGPU_MAX_DF_PERFMONS 4
+#define GSGPU_PRODUCT_NAME_LEN 64
+struct gsgpu_reset_domain;
+
+enum pp_mp1_state {
+	PP_MP1_STATE_NONE,
+	PP_MP1_STATE_SHUTDOWN,
+	PP_MP1_STATE_UNLOAD,
+	PP_MP1_STATE_RESET,
+};
+
+/*
+ * Non-zero (true) if the GPU has VRAM. Zero (false) otherwise.
+ */
+#define GSGPU_HAS_VRAM(_adev) ((_adev)->gmc.real_vram_size)
+
 struct gsgpu_device {
 	struct device			*dev;
-	struct drm_device		*ddev;
 	struct pci_dev			*pdev;
+	struct drm_device		ddev;
+
 	struct pci_dev			*loongson_dc;
 	u8 chip_revision;
 
@@ -1019,34 +688,30 @@ struct gsgpu_device {
 	enum gsgpu_family_type		family_type;
 	uint32_t			family;
 	unsigned long			flags;
+	unsigned long			apu_flags;
 	int				usec_timeout;
 	const struct gsgpu_asic_funcs	*asic_funcs;
 	bool				shutdown;
-	bool				need_dma32;
 	bool				need_swiotlb;
 	bool				accel_working;
-	struct work_struct		reset_work;
 	struct notifier_block		acpi_nb;
-	struct gsgpu_debugfs		debugfs[GSGPU_DEBUGFS_MAX_COMPONENTS];
-	unsigned			debugfs_count;
-#if defined(CONFIG_DEBUG_FS)
-	struct dentry			*debugfs_regs[GSGPU_DEBUGFS_MAX_COMPONENTS];
-#endif
+	struct debugfs_blob_wrapper     debugfs_vbios_blob;
+
 	struct mutex			srbm_mutex;
 	/* GRBM index mutex. Protects concurrent access to GRBM index */
 	struct mutex                    grbm_idx_mutex;
 	struct dev_pm_domain		vga_pm_domain;
 	bool				have_disp_power_ref;
+	bool                            have_atomics_support;
 
 	/* BIOS */
 	bool				is_atom_fw;
 	uint8_t				*bios;
 	uint32_t			bios_size;
-	struct gsgpu_bo		*stolen_vga_memory;
 	uint32_t			bios_scratch_reg_offset;
 	uint32_t			bios_scratch[GSGPU_BIOS_NUM_SCRATCH];
 
-	/* Register mmio */
+	/* Register/doorbell mmio */
 	resource_size_t			rmmio_base;
 	resource_size_t			rmmio_size;
 	void __iomem			*rmmio;
@@ -1059,6 +724,9 @@ struct gsgpu_device {
 	/* protects concurrent MM_INDEX/DATA based register access */
 	spinlock_t mmio_idx_lock;
 	spinlock_t dc_mmio_lock;
+
+	struct gsgpu_mmio_remap        rmmio_remap;
+
 	/* protects concurrent PCIE register access */
 	spinlock_t pcie_idx_lock;
 
@@ -1074,12 +742,14 @@ struct gsgpu_device {
 	struct gsgpu_gmc		gmc;
 	struct gsgpu_gart		gart;
 	struct gsgpu_zip_meta	zip_meta;
+
 	dma_addr_t			dummy_page_addr;
 	struct gsgpu_vm_manager	vm_manager;
+	unsigned			num_vmhubs;
 
 	/* memory management */
 	struct gsgpu_mman		mman;
-	struct gsgpu_vram_scratch	vram_scratch;
+	struct gsgpu_mem_scratch	mem_scratch;
 	struct gsgpu_wb		wb;
 	atomic64_t			num_bytes_moved;
 	atomic64_t			num_evictions;
@@ -1098,28 +768,34 @@ struct gsgpu_device {
 		u32			log2_max_MBps;
 	} mm_stats;
 
+	/* display */
+	bool				enable_virtual_display;
 	struct gsgpu_dc			*dc;
+
 	struct gsgpu_mode_info		mode_info;
 	struct gsgpu_dc_i2c		*i2c[2];
-	struct work_struct		hotplug_work;
+	struct delayed_work         hotplug_work;
 	struct gsgpu_irq_src		vsync_irq;
 	struct gsgpu_irq_src		i2c_irq;
 	struct gsgpu_irq_src		hpd_irq;
+	struct gsgpu_irq_src		dmub_trace_irq;
+	struct gsgpu_irq_src		dmub_outbox_irq;
 
 	/* rings */
 	u64				fence_context;
 	unsigned			num_rings;
 	struct gsgpu_ring		*rings[GSGPU_MAX_RINGS];
+	struct dma_fence __rcu		*gang_submit;
 	bool				ib_pool_ready;
-	struct gsgpu_sa_manager	ring_tmp_bo;
+	struct gsgpu_sa_manager	ib_pools[GSGPU_IB_POOL_MAX];
+	struct gsgpu_sched		gpu_sched[GSGPU_HW_IP_NUM][GSGPU_RING_PRIO_MAX];
 
 	/* interrupts */
 	struct gsgpu_irq		irq;
 
 	/* HPD */
 	int				vga_hpd_status;
-
-	u32				cg_flags;
+	u64				cg_flags;
 	u32				pg_flags;
 
 	/* gfx */
@@ -1128,10 +804,8 @@ struct gsgpu_device {
 	/* xdma */
 	struct gsgpu_xdma		xdma;
 
-	/* firmwares */
-	struct gsgpu_firmware		firmware;
-
 	struct gsgpu_ip_block          ip_blocks[GSGPU_MAX_IP_NUM];
+	uint32_t		        harvest_ip_mask;
 	int				num_ip_blocks;
 	struct mutex	mn_lock;
 	DECLARE_HASHTABLE(mn_hash, 7);
@@ -1142,28 +816,89 @@ struct gsgpu_device {
 	atomic64_t gart_pin_size;
 
 	/* delayed work_func for deferring clockgating during resume */
-	struct delayed_work     late_init_work;
+	struct delayed_work     delayed_init_work;
 
 	//zl prior virt
 	uint32_t			reg_val_offs;
-	/* firmware VRAM reservation */
-	struct gsgpu_fw_vram_usage fw_vram_usage;
 
 	/* link all shadow bo */
 	struct list_head                shadow_list;
 	struct mutex                    shadow_list_lock;
-	/* keep an lru list of rings by HW IP */
-	struct list_head		ring_lru_list;
-	spinlock_t			ring_lru_list_lock;
 
 	/* record hw reset is performed */
 	bool has_hw_reset;
 	u8				reset_magic[GSGPU_RESET_MAGIC_NUM];
 
-	/* record last mm index being written through WREG32*/
-	unsigned long last_mm_index;
-	bool                            in_gpu_reset;
-	struct mutex  lock_reset;
+	/* s3/s4 mask */
+	bool                            in_suspend;
+	bool				in_s3;
+	bool				in_s4;
+	bool				in_s0ix;
+
+	enum pp_mp1_state               mp1_state;
+
+	struct mutex			notifier_lock;
+
+	int asic_reset_res;
+
+	struct list_head		reset_list;
+
+	long				gfx_timeout;
+	long				xdma_timeout;
+	long				video_timeout;
+
+	uint64_t			unique_id;
+	uint64_t	df_perfmon_config_assign_mask[GSGPU_MAX_DF_PERFMONS];
+
+	/* enable runtime pm on the device */
+	bool                            in_runpm;
+	bool                            has_pr3;
+
+	bool                            pm_sysfs_en;
+
+	/* Chip product information */
+	char				product_number[20];
+	char				product_name[GSGPU_PRODUCT_NAME_LEN];
+	char				serial[20];
+
+	atomic_t			throttling_logging_enabled;
+	struct ratelimit_state		throttling_logging_rs;
+	uint32_t                        ras_hw_enabled;
+
+	bool                            no_hw_access;
+	struct pci_saved_state          *pci_state;
+	pci_channel_state_t		pci_channel_state;
+
+	struct gsgpu_reset_control     *reset_cntl;
+	uint32_t                        ip_versions[MAX_HWIP][HWIP_MAX_INSTANCE];
+
+	bool				ram_is_direct_mapped;
+
+	struct list_head                ras_list;
+
+	struct ip_discovery_top         *ip_top;
+
+	struct gsgpu_reset_domain	*reset_domain;
+
+	struct mutex			benchmark_mutex;
+
+	/* reset dump register */
+	uint32_t                        *reset_dump_reg_list;
+	uint32_t			*reset_dump_reg_value;
+	int                             num_regs;
+#ifdef CONFIG_DEV_COREDUMP
+	struct gsgpu_task_info         reset_task_info;
+	bool                            reset_vram_lost;
+	struct timespec64               reset_time;
+#endif
+
+	bool                            scpm_enabled;
+	uint32_t                        scpm_status;
+
+	struct work_struct		reset_work;
+
+	bool                            job_hang;
+	bool                            dc_enabled;
 
 	struct loongson_vbios *vbios;
 	bool cursor_showed;
@@ -1172,45 +907,82 @@ struct gsgpu_device {
 	bool inited;
 };
 
-static inline struct gsgpu_device *gsgpu_ttm_adev(struct ttm_bo_device *bdev)
+static inline struct gsgpu_device *drm_to_adev(struct drm_device *ddev)
+{
+	return container_of(ddev, struct gsgpu_device, ddev);
+}
+
+static inline struct drm_device *adev_to_drm(struct gsgpu_device *adev)
+{
+	return &adev->ddev;
+}
+
+static inline struct gsgpu_device *gsgpu_ttm_adev(struct ttm_device *bdev)
 {
 	return container_of(bdev, struct gsgpu_device, mman.bdev);
 }
 
 int gsgpu_device_init(struct gsgpu_device *adev,
-		       struct drm_device *ddev,
-		       struct pci_dev *pdev,
 		       uint32_t flags);
-void gsgpu_device_fini(struct gsgpu_device *adev);
+void gsgpu_device_fini_hw(struct gsgpu_device *adev);
+void gsgpu_device_fini_sw(struct gsgpu_device *adev);
+
 int gsgpu_gpu_wait_for_idle(struct gsgpu_device *adev);
 
 uint64_t gsgpu_cmd_exec(struct gsgpu_device *adev, uint32_t cmd, 
 			uint32_t arg0, uint32_t arg1);
 
-uint32_t gsgpu_mm_rreg(struct gsgpu_device *adev, uint32_t reg,
+void gsgpu_device_mm_access(struct gsgpu_device *adev, loff_t pos,
+			     void *buf, size_t size, bool write);
+size_t gsgpu_device_aper_access(struct gsgpu_device *adev, loff_t pos,
+				 void *buf, size_t size, bool write);
+
+void gsgpu_device_vram_access(struct gsgpu_device *adev, loff_t pos,
+			       void *buf, size_t size, bool write);
+uint32_t gsgpu_device_rreg(struct gsgpu_device *adev,
+			    uint32_t reg, uint32_t acc_flags);
+void gsgpu_device_wreg(struct gsgpu_device *adev,
+			uint32_t reg, uint32_t v,
 			uint32_t acc_flags);
-void gsgpu_mm_wreg(struct gsgpu_device *adev, uint32_t reg, uint32_t v);
 void gsgpu_mm_wreg8(struct gsgpu_device *adev, uint32_t offset, uint8_t value);
 uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset);
+
+u32 gsgpu_device_indirect_rreg(struct gsgpu_device *adev,
+				u32 pcie_index, u32 pcie_data,
+				u32 reg_addr);
+u64 gsgpu_device_indirect_rreg64(struct gsgpu_device *adev,
+				  u32 pcie_index, u32 pcie_data,
+				  u32 reg_addr);
+void gsgpu_device_indirect_wreg(struct gsgpu_device *adev,
+				 u32 pcie_index, u32 pcie_data,
+				 u32 reg_addr, u32 reg_data);
+void gsgpu_device_indirect_wreg64(struct gsgpu_device *adev,
+				   u32 pcie_index, u32 pcie_data,
+				   u32 reg_addr, u64 reg_data);
+
+int gsgpu_device_pre_asic_reset(struct gsgpu_device *adev,
+				 struct gsgpu_reset_context *reset_context);
+
+int gsgpu_do_asic_reset(struct list_head *device_list_handle,
+			 struct gsgpu_reset_context *reset_context);
 
 /*
  * Registers read & write functions.
  */
-
 #define GSGPU_REGS_IDX       (1<<0)
 #define GSGPU_REGS_NO_KIQ    (1<<1)
+#define GSGPU_REGS_RLC	(1<<2)
 
-#define RREG32_NO_KIQ(reg) gsgpu_mm_rreg(adev, (reg), GSGPU_REGS_NO_KIQ)
-#define WREG32_NO_KIQ(reg, v) gsgpu_mm_wreg(adev, (reg), (v))
+#define RREG32_IDX(reg) gsgpu_device_rreg(adev, (reg), GSGPU_REGS_IDX)
+#define RREG32_NO_KIQ(reg) gsgpu_device_rreg(adev, (reg), GSGPU_REGS_NO_KIQ)
+#define WREG32_NO_KIQ(reg, v) gsgpu_device_wreg(adev, (reg), (v), GSGPU_REGS_NO_KIQ)
 
 #define RREG8(reg) gsgpu_mm_rreg8(adev, (reg))
 #define WREG8(reg, v) gsgpu_mm_wreg8(adev, (reg), (v))
 
-#define RREG32(reg) gsgpu_mm_rreg(adev, (reg), 0)
-#define RREG32_IDX(reg) gsgpu_mm_rreg(adev, (reg), GSGPU_REGS_IDX)
-#define DREG32(reg) printk(KERN_INFO "REGISTER: " #reg " : 0x%08X\n", gsgpu_mm_rreg(adev, (reg), 0))
-#define WREG32(reg, v) gsgpu_mm_wreg(adev, (reg), (v))
-#define WREG32_IDX(reg, v) gsgpu_mm_wreg(adev, (reg), (v))
+#define RREG32(reg) gsgpu_device_rreg(adev, (reg), 0)
+#define DREG32(reg) printk(KERN_INFO "REGISTER: " #reg " : 0x%08X\n", gsgpu_device_rreg(adev, (reg), 0))
+#define WREG32(reg, v) gsgpu_device_wreg(adev, (reg), (v), 0)
 #define REG_SET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)
 #define REG_GET(FIELD, v) (((v) << FIELD##_SHIFT) & FIELD##_MASK)
 #define RREG32_SE_CAC(reg) adev->se_cac_rreg(adev, (reg))
@@ -1231,7 +1003,16 @@ uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset);
 		tmp_ |= ((val) & ~(mask));			\
 		WREG32_PLL(reg, tmp_);				\
 	} while (0)
-#define DREG32_SYS(sqf, adev, reg) seq_printf((sqf), #reg " : 0x%08X\n", gsgpu_mm_rreg((adev), (reg), false))
+
+#define WREG32_SMC_P(_Reg, _Val, _Mask)                         \
+	do {                                                    \
+		u32 tmp = RREG32_SMC(_Reg);                     \
+		tmp &= (_Mask);                                 \
+		tmp |= ((_Val) & ~(_Mask));                     \
+		WREG32_SMC(_Reg, tmp);                          \
+	} while (0)
+
+#define DREG32_SYS(sqf, adev, reg) seq_printf((sqf), #reg " : 0x%08X\n", gsgpu_device_rreg((adev), (reg), false))
 
 #define REG_FIELD_SHIFT(reg, field) reg##__##field##__SHIFT
 #define REG_FIELD_MASK(reg, field) reg##__##field##_MASK
@@ -1256,22 +1037,6 @@ uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset);
 #define RBIOS16(i) (RBIOS8(i) | (RBIOS8((i)+1) << 8))
 #define RBIOS32(i) ((RBIOS16(i)) | (RBIOS16((i)+2) << 16))
 
-static inline struct gsgpu_xdma_instance *
-gsgpu_get_xdma_instance(struct gsgpu_ring *ring)
-{
-	struct gsgpu_device *adev = ring->adev;
-	int i;
-
-	for (i = 0; i < adev->xdma.num_instances; i++)
-		if (&adev->xdma.instance[i].ring == ring)
-			break;
-
-	if (i < GSGPU_MAX_XDMA_INSTANCES)
-		return &adev->xdma.instance[i];
-	else
-		return NULL;
-}
-
 /*
  * ASICs macro.
  */
@@ -1283,71 +1048,40 @@ gsgpu_get_xdma_instance(struct gsgpu_ring *ring)
 #define gsgpu_asic_read_bios_from_rom(adev, b, l) (adev)->asic_funcs->read_bios_from_rom((adev), (b), (l))
 #define gsgpu_asic_read_register(adev, se, sh, offset, v)((adev)->asic_funcs->read_register((adev), (se), (sh), (offset), (v)))
 #define gsgpu_asic_need_full_reset(adev) (adev)->asic_funcs->need_full_reset((adev))
-#define gsgpu_gmc_flush_gpu_tlb(adev, vmid) (adev)->gmc.gmc_funcs->flush_gpu_tlb((adev), (vmid))
-#define gsgpu_gmc_emit_flush_gpu_tlb(r, vmid, addr) (r)->adev->gmc.gmc_funcs->emit_flush_gpu_tlb((r), (vmid), (addr))
-#define gsgpu_gmc_emit_pasid_mapping(r, vmid, pasid) (r)->adev->gmc.gmc_funcs->emit_pasid_mapping((r), (vmid), (pasid))
-#define gsgpu_gmc_set_pte_pde(adev, pt, idx, addr, flags) (adev)->gmc.gmc_funcs->set_pte_pde((adev), (pt), (idx), (addr), (flags))
-#define gsgpu_gmc_get_vm_pde(adev, level, dst, flags) (adev)->gmc.gmc_funcs->get_vm_pde((adev), (level), (dst), (flags))
-#define gsgpu_gmc_get_pte_flags(adev, flags) (adev)->gmc.gmc_funcs->get_vm_pte_flags((adev),(flags))
-#define gsgpu_vm_copy_pte(adev, ib, pe, src, count) ((adev)->vm_manager.vm_pte_funcs->copy_pte((ib), (pe), (src), (count)))
-#define gsgpu_vm_write_pte(adev, ib, pe, value, count, incr) ((adev)->vm_manager.vm_pte_funcs->write_pte((ib), (pe), (value), (count), (incr)))
-#define gsgpu_vm_set_pte_pde(adev, ib, pe, addr, count, incr, flags) ((adev)->vm_manager.vm_pte_funcs->set_pte_pde((ib), (pe), (addr), (count), (incr), (flags)))
-#define gsgpu_ring_parse_cs(r, p, ib) ((r)->funcs->parse_cs((p), (ib)))
-#define gsgpu_ring_patch_cs_in_place(r, p, ib) ((r)->funcs->patch_cs_in_place((p), (ib)))
-#define gsgpu_ring_test_ring(r) (r)->funcs->test_ring((r))
-#define gsgpu_ring_test_ib(r, t) (r)->funcs->test_ib((r), (t))
 #define gsgpu_ring_test_xdma(r, t) (r)->funcs->test_xdma((r), (t))
-#define gsgpu_ring_get_rptr(r) (r)->funcs->get_rptr((r))
-#define gsgpu_ring_get_wptr(r) (r)->funcs->get_wptr((r))
-#define gsgpu_ring_set_wptr(r) (r)->funcs->set_wptr((r))
-#define gsgpu_ring_emit_ib(r, ib, vmid, c) (r)->funcs->emit_ib((r), (ib), (vmid), (c))
-#define gsgpu_ring_emit_pipeline_sync(r) (r)->funcs->emit_pipeline_sync((r))
-#define gsgpu_ring_emit_vm_flush(r, vmid, addr) (r)->funcs->emit_vm_flush((r), (vmid), (addr))
-#define gsgpu_ring_emit_fence(r, addr, seq, flags) (r)->funcs->emit_fence((r), (addr), (seq), (flags))
-#define gsgpu_ring_emit_switch_buffer(r) (r)->funcs->emit_switch_buffer((r))
-#define gsgpu_ring_emit_cntxcntl(r, d) (r)->funcs->emit_cntxcntl((r), (d))
-#define gsgpu_ring_emit_rreg(r, d) (r)->funcs->emit_rreg((r), (d))
-#define gsgpu_ring_emit_wreg(r, d, v) (r)->funcs->emit_wreg((r), (d), (v))
-#define gsgpu_ring_emit_reg_wait(r, d, v, m) (r)->funcs->emit_reg_wait((r), (d), (v), (m))
-#define gsgpu_ring_emit_reg_write_reg_wait(r, d0, d1, v, m) (r)->funcs->emit_reg_write_reg_wait((r), (d0), (d1), (v), (m))
-#define gsgpu_ring_emit_tmz(r, b) (r)->funcs->emit_tmz((r), (b))
-#define gsgpu_ring_pad_ib(r, ib) ((r)->funcs->pad_ib((r), (ib)))
-#define gsgpu_ring_init_cond_exec(r) (r)->funcs->init_cond_exec((r))
-#define gsgpu_ring_patch_cond_exec(r,o) (r)->funcs->patch_cond_exec((r),(o))
-#define gsgpu_ih_get_wptr(adev) (adev)->irq.ih_funcs->get_wptr((adev))
-#define gsgpu_ih_prescreen_iv(adev) (adev)->irq.ih_funcs->prescreen_iv((adev))
-#define gsgpu_ih_decode_iv(adev, iv) (adev)->irq.ih_funcs->decode_iv((adev), (iv))
-#define gsgpu_ih_set_rptr(adev) (adev)->irq.ih_funcs->set_rptr((adev))
-#define gsgpu_display_vblank_get_counter(adev, crtc) (adev)->mode_info.funcs->vblank_get_counter((adev), (crtc))
-#define gsgpu_display_backlight_set_level(adev, e, l) (adev)->mode_info.funcs->backlight_set_level((e), (l))
-#define gsgpu_display_backlight_get_level(adev, e) (adev)->mode_info.funcs->backlight_get_level((e))
-#define gsgpu_display_hpd_sense(adev, h) (adev)->mode_info.funcs->hpd_sense((adev), (h))
-#define gsgpu_display_hpd_set_polarity(adev, h) (adev)->mode_info.funcs->hpd_set_polarity((adev), (h))
-#define gsgpu_display_page_flip(adev, crtc, base, async) (adev)->mode_info.funcs->page_flip((adev), (crtc), (base), (async))
-#define gsgpu_display_page_flip_get_scanoutpos(adev, crtc, vbl, pos) (adev)->mode_info.funcs->page_flip_get_scanoutpos((adev), (crtc), (vbl), (pos))
-#define gsgpu_emit_copy_buffer(adev, ib, s, d, b) (adev)->mman.buffer_funcs->emit_copy_buffer((ib),  (s), (d), (b))
-#define gsgpu_emit_fill_buffer(adev, ib, s, d, b) (adev)->mman.buffer_funcs->emit_fill_buffer((ib), (s), (d), (b))
-#define gsgpu_gfx_get_gpu_clock_counter(adev) (adev)->gfx.funcs->get_gpu_clock_counter((adev))
-#define gsgpu_psp_check_fw_loading_status(adev, i) (adev)->firmware.funcs->check_fw_loading_status((adev), (i))
-#define gsgpu_gfx_select_me_pipe_q(adev, me, pipe, q) (adev)->gfx.funcs->select_me_pipe_q((adev), (me), (pipe), (q))
+
+#define gsgpu_inc_vram_lost(adev) atomic_inc(&((adev)->vram_lost_counter));
+
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 /* Common functions */
+bool gsgpu_device_has_job_running(struct gsgpu_device *adev);
+
 int gsgpu_device_gpu_recover(struct gsgpu_device *adev,
-			      struct gsgpu_job* job, bool force);
+			      struct gsgpu_job *job,
+			      struct gsgpu_reset_context *reset_context);
 void gsgpu_device_pci_config_reset(struct gsgpu_device *adev);
+int gsgpu_device_pci_reset(struct gsgpu_device *adev);
 bool gsgpu_device_need_post(struct gsgpu_device *adev);
-void gsgpu_display_update_priority(struct gsgpu_device *adev);
 
 void gsgpu_cs_report_moved_bytes(struct gsgpu_device *adev, u64 num_bytes,
 				  u64 num_vis_bytes);
-void gsgpu_device_vram_location(struct gsgpu_device *adev,
-				 struct gsgpu_gmc *mc, u64 base);
-void gsgpu_device_gart_location(struct gsgpu_device *adev,
-				 struct gsgpu_gmc *mc);
 int gsgpu_device_resize_fb_bar(struct gsgpu_device *adev);
 void gsgpu_device_program_register_sequence(struct gsgpu_device *adev,
 					     const u32 *registers,
 					     const u32 array_size);
+
+bool gsgpu_device_is_peer_accessible(struct gsgpu_device *adev,
+				      struct gsgpu_device *peer_adev);
+
+void gsgpu_device_flush_hdp(struct gsgpu_device *adev,
+		struct gsgpu_ring *ring);
+void gsgpu_device_invalidate_hdp(struct gsgpu_device *adev,
+		struct gsgpu_ring *ring);
+
+void gsgpu_device_halt(struct gsgpu_device *adev);
+struct dma_fence *gsgpu_device_switch_gang(struct gsgpu_device *adev,
+					    struct dma_fence *gang);
 
 /*
  * KMS
@@ -1355,18 +1089,20 @@ void gsgpu_device_program_register_sequence(struct gsgpu_device *adev,
 extern const struct drm_ioctl_desc gsgpu_ioctls_kms[];
 extern const int gsgpu_max_kms_ioctl;
 
-int gsgpu_driver_load_kms(struct drm_device *dev, unsigned long flags);
+int gsgpu_driver_load_kms(struct gsgpu_device *adev, unsigned long flags);
 void gsgpu_driver_unload_kms(struct drm_device *dev);
 void gsgpu_driver_lastclose_kms(struct drm_device *dev);
 int gsgpu_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv);
 void gsgpu_driver_postclose_kms(struct drm_device *dev,
 				 struct drm_file *file_priv);
+void gsgpu_driver_release_kms(struct drm_device *dev);
+
 int gsgpu_device_ip_suspend(struct gsgpu_device *adev);
-int gsgpu_device_suspend(struct drm_device *dev, bool suspend, bool fbcon);
-int gsgpu_device_resume(struct drm_device *dev, bool resume, bool fbcon);
-u32 gsgpu_get_vblank_counter_kms(struct drm_device *dev, unsigned int pipe);
-long gsgpu_kms_compat_ioctl(struct file *filp, unsigned int cmd,
-			     unsigned long arg);
+int gsgpu_device_suspend(struct drm_device *dev, bool fbcon);
+int gsgpu_device_resume(struct drm_device *dev, bool fbcon);
+u32 gsgpu_get_vblank_counter_kms(struct drm_crtc *crtc);
+int gsgpu_info_ioctl(struct drm_device *dev, void *data,
+		      struct drm_file *filp);
 
 /*
  * functions used by gsgpu_encoder.c
@@ -1388,21 +1124,68 @@ struct gsgpu_afmt_acr {
 struct gsgpu_afmt_acr gsgpu_afmt_acr(uint32_t clock);
 
 /* gsgpu_acpi.c */
+
+/* ATCS Device/Driver State */
+#define GSGPU_ATCS_PSC_DEV_STATE_D0		0
+#define GSGPU_ATCS_PSC_DEV_STATE_D3_HOT	3
+#define GSGPU_ATCS_PSC_DRV_STATE_OPR		0
+#define GSGPU_ATCS_PSC_DRV_STATE_NOT_OPR	1
+/*
 #if defined(CONFIG_ACPI)
 int gsgpu_acpi_init(struct gsgpu_device *adev);
 void gsgpu_acpi_fini(struct gsgpu_device *adev);
 bool gsgpu_acpi_is_pcie_performance_request_supported(struct gsgpu_device *adev);
+bool gsgpu_acpi_is_power_shift_control_supported(void);
 int gsgpu_acpi_pcie_performance_request(struct gsgpu_device *adev,
 						u8 perf_req, bool advertise);
+int gsgpu_acpi_power_shift_control(struct gsgpu_device *adev,
+				    u8 dev_state, bool drv_state);
+int gsgpu_acpi_smart_shift_update(struct drm_device *dev, enum gsgpu_ss ss_state);
 int gsgpu_acpi_pcie_notify_device_ready(struct gsgpu_device *adev);
+
+void gsgpu_acpi_get_backlight_caps(struct gsgpu_dm_backlight_caps *caps);
+bool gsgpu_acpi_should_gpu_reset(struct gsgpu_device *adev);
+void gsgpu_acpi_detect(void);
 #else
+*/
 static inline int gsgpu_acpi_init(struct gsgpu_device *adev) { return 0; }
 static inline void gsgpu_acpi_fini(struct gsgpu_device *adev) { }
-#endif
+static inline bool gsgpu_acpi_should_gpu_reset(struct gsgpu_device *adev) { return false; }
+static inline void gsgpu_acpi_detect(void) { }
+static inline bool gsgpu_acpi_is_power_shift_control_supported(void) { return false; }
+static inline int gsgpu_acpi_power_shift_control(struct gsgpu_device *adev,
+						  u8 dev_state, bool drv_state) { return 0; }
+static inline int gsgpu_acpi_smart_shift_update(struct drm_device *dev,
+						 enum gsgpu_ss ss_state) { return 0; }
+// #endif
 
-int gsgpu_cs_find_mapping(struct gsgpu_cs_parser *parser,
-			   uint64_t addr, struct gsgpu_bo **bo,
-			   struct gsgpu_bo_va_mapping **mapping);
+/*
+#if defined(CONFIG_ACPI) && defined(CONFIG_SUSPEND)
+bool gsgpu_acpi_is_s3_active(struct gsgpu_device *adev);
+bool gsgpu_acpi_is_s0ix_active(struct gsgpu_device *adev);
+#else
+*/
+
+static inline bool gsgpu_acpi_is_s0ix_active(struct gsgpu_device *adev) { return false; }
+static inline bool gsgpu_acpi_is_s3_active(struct gsgpu_device *adev) { return false; }
+// #endif
+
+void gsgpu_register_gpu_instance(struct gsgpu_device *adev);
+void gsgpu_unregister_gpu_instance(struct gsgpu_device *adev);
+
+pci_ers_result_t gsgpu_pci_error_detected(struct pci_dev *pdev,
+					   pci_channel_state_t state);
+pci_ers_result_t gsgpu_pci_mmio_enabled(struct pci_dev *pdev);
+pci_ers_result_t gsgpu_pci_slot_reset(struct pci_dev *pdev);
+void gsgpu_pci_resume(struct pci_dev *pdev);
+
+bool gsgpu_device_cache_pci_state(struct pci_dev *pdev);
+bool gsgpu_device_load_pci_state(struct pci_dev *pdev);
+
+bool gsgpu_device_skip_hw_access(struct gsgpu_device *adev);
 
 #include "gsgpu_object.h"
+
+int gsgpu_in_reset(struct gsgpu_device *adev);
+
 #endif

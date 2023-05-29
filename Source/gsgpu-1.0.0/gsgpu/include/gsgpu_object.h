@@ -30,18 +30,32 @@
 
 #include <drm/gsgpu_drm.h>
 #include "gsgpu.h"
+#include "gsgpu_res_cursor.h"
+
+#ifdef CONFIG_MMU_NOTIFIER
+#include <linux/mmu_notifier.h>
+#endif
 
 #define GSGPU_BO_INVALID_OFFSET	LONG_MAX
 #define GSGPU_BO_MAX_PLACEMENTS	3
 
+/* BO flag to indicate a KFD userptr BO */
+#define GSGPU_AMDKFD_CREATE_USERPTR_BO	(1ULL << 63)
+
+#define to_gsgpu_bo_user(abo) container_of((abo), struct gsgpu_bo_user, bo)
+#define to_gsgpu_bo_vm(abo) container_of((abo), struct gsgpu_bo_vm, bo)
+
 struct gsgpu_bo_param {
 	unsigned long			size;
 	int				byte_align;
+	u32				bo_ptr_size;
 	u32				domain;
 	u32				preferred_domain;
 	u64				flags;
 	enum ttm_bo_type		type;
-	struct reservation_object	*resv;
+	bool				no_wait_gpu;
+	struct dma_resv			*resv;
+	void				(*destroy)(struct ttm_buffer_object *bo);
 };
 
 /* User space allocated BO in a VM */
@@ -71,27 +85,31 @@ struct gsgpu_bo {
 	struct ttm_buffer_object	tbo;
 	struct ttm_bo_kmap_obj		kmap;
 	u64				flags;
-	unsigned			pin_count;
-	u64				tiling_flags;
 	u64				node_offset;
+	/* per VM structure for page tables and with virtual addresses */
+	struct gsgpu_vm_bo_base	*vm_bo;
+	/* Constant after initialization */
+	struct gsgpu_bo		*parent;
+
+#ifdef CONFIG_MMU_NOTIFIER
+	struct mmu_interval_notifier	notifier;
+#endif
+};
+
+struct gsgpu_bo_user {
+	struct gsgpu_bo		bo;
+	u64				tiling_flags;
 	u64				metadata_flags;
 	void				*metadata;
 	u32				metadata_size;
-	unsigned			prime_shared_count;
-	/* list of all virtual address to which this bo is associated to */
-	struct list_head		va;
-	/* Constant after initialization */
-	struct drm_gem_object		gem_base;
-	struct gsgpu_bo		*parent;
+
+};
+
+struct gsgpu_bo_vm {
+	struct gsgpu_bo		bo;
 	struct gsgpu_bo		*shadow;
-
-	struct ttm_bo_kmap_obj		dma_buf_vmap;
-	struct gsgpu_mn		*mn;
-
-	union {
-		struct list_head	mn_list;
-		struct list_head	shadow_list;
-	};
+	struct list_head		shadow_list;
+	struct gsgpu_vm_bo_base        entries[];
 };
 
 static inline struct gsgpu_bo *ttm_to_gsgpu_bo(struct ttm_buffer_object *tbo)
@@ -150,17 +168,17 @@ static inline void gsgpu_bo_unreserve(struct gsgpu_bo *bo)
 
 static inline unsigned long gsgpu_bo_size(struct gsgpu_bo *bo)
 {
-	return bo->tbo.num_pages << PAGE_SHIFT;
+	return bo->tbo.base.size;
 }
 
 static inline unsigned gsgpu_bo_ngpu_pages(struct gsgpu_bo *bo)
 {
-	return (bo->tbo.num_pages << PAGE_SHIFT) / GSGPU_GPU_PAGE_SIZE;
+	return bo->tbo.base.size / GSGPU_GPU_PAGE_SIZE;
 }
 
 static inline unsigned gsgpu_bo_gpu_page_alignment(struct gsgpu_bo *bo)
 {
-	return (bo->tbo.mem.page_alignment << PAGE_SHIFT) / GSGPU_GPU_PAGE_SIZE;
+	return (bo->tbo.page_alignment << PAGE_SHIFT) / GSGPU_GPU_PAGE_SIZE;
 }
 
 /**
@@ -171,20 +189,7 @@ static inline unsigned gsgpu_bo_gpu_page_alignment(struct gsgpu_bo *bo)
  */
 static inline u64 gsgpu_bo_mmap_offset(struct gsgpu_bo *bo)
 {
-	return drm_vma_node_offset_addr(&bo->tbo.vma_node);
-}
-
-/**
- * gsgpu_bo_gpu_accessible - return whether the bo is currently in memory that
- * is accessible to the GPU.
- */
-static inline bool gsgpu_bo_gpu_accessible(struct gsgpu_bo *bo)
-{
-	switch (bo->tbo.mem.mem_type) {
-	case TTM_PL_TT: return gsgpu_gtt_mgr_has_gart_addr(&bo->tbo.mem);
-	case TTM_PL_VRAM: return true;
-	default: return false;
-	}
+	return drm_vma_node_offset_addr(&bo->tbo.base.vma_node);
 }
 
 /**
@@ -193,17 +198,18 @@ static inline bool gsgpu_bo_gpu_accessible(struct gsgpu_bo *bo)
 static inline bool gsgpu_bo_in_cpu_visible_vram(struct gsgpu_bo *bo)
 {
 	struct gsgpu_device *adev = gsgpu_ttm_adev(bo->tbo.bdev);
-	unsigned fpfn = adev->gmc.visible_vram_size >> PAGE_SHIFT;
-	struct drm_mm_node *node = bo->tbo.mem.mm_node;
-	unsigned long pages_left;
+	struct gsgpu_res_cursor cursor;
 
-	if (bo->tbo.mem.mem_type != TTM_PL_VRAM)
+	if (bo->tbo.resource->mem_type != TTM_PL_VRAM)
 		return false;
 
-	for (pages_left = bo->tbo.mem.num_pages; pages_left;
-	     pages_left -= node->size, node++)
-		if (node->start < fpfn)
+	gsgpu_res_first(bo->tbo.resource, 0, gsgpu_bo_size(bo), &cursor);
+	while (cursor.remaining) {
+		if (cursor.start < adev->gmc.visible_vram_size)
 			return true;
+
+		gsgpu_res_next(&cursor, cursor.size);
+	}
 
 	return false;
 }
@@ -214,6 +220,33 @@ static inline bool gsgpu_bo_in_cpu_visible_vram(struct gsgpu_bo *bo)
 static inline bool gsgpu_bo_explicit_sync(struct gsgpu_bo *bo)
 {
 	return bo->flags & GSGPU_GEM_CREATE_EXPLICIT_SYNC;
+}
+
+/**
+ * gsgpu_bo_encrypted - test if the BO is encrypted
+ * @bo: pointer to a buffer object
+ *
+ * Return true if the buffer object is encrypted, false otherwise.
+ */
+static inline bool gsgpu_bo_encrypted(struct gsgpu_bo *bo)
+{
+	return bo->flags & GSGPU_GEM_CREATE_ENCRYPTED;
+}
+
+/**
+ * gsgpu_bo_shadowed - check if the BO is shadowed
+ *
+ * @bo: BO to be tested.
+ *
+ * Returns:
+ * NULL if not shadowed or else return a BO pointer.
+ */
+static inline struct gsgpu_bo *gsgpu_bo_shadowed(struct gsgpu_bo *bo)
+{
+	if (bo->tbo.type == ttm_bo_type_kernel)
+		return to_gsgpu_bo_vm(bo)->shadow;
+
+	return NULL;
 }
 
 bool gsgpu_bo_is_gsgpu_bo(struct ttm_buffer_object *bo);
@@ -230,6 +263,15 @@ int gsgpu_bo_create_kernel(struct gsgpu_device *adev,
 			    unsigned long size, int align,
 			    u32 domain, struct gsgpu_bo **bo_ptr,
 			    u64 *gpu_addr, void **cpu_addr);
+int gsgpu_bo_create_kernel_at(struct gsgpu_device *adev,
+			       uint64_t offset, uint64_t size,
+			       struct gsgpu_bo **bo_ptr, void **cpu_addr);
+int gsgpu_bo_create_user(struct gsgpu_device *adev,
+			  struct gsgpu_bo_param *bp,
+			  struct gsgpu_bo_user **ubo_ptr);
+int gsgpu_bo_create_vm(struct gsgpu_device *adev,
+			struct gsgpu_bo_param *bp,
+			struct gsgpu_bo_vm **ubo_ptr);
 void gsgpu_bo_free_kernel(struct gsgpu_bo **bo, u64 *gpu_addr,
 			   void **cpu_addr);
 int gsgpu_bo_kmap(struct gsgpu_bo *bo, void **ptr);
@@ -240,13 +282,9 @@ void gsgpu_bo_unref(struct gsgpu_bo **bo);
 int gsgpu_bo_pin(struct gsgpu_bo *bo, u32 domain);
 int gsgpu_bo_pin_restricted(struct gsgpu_bo *bo, u32 domain,
 			     u64 min_offset, u64 max_offset);
-int gsgpu_bo_unpin(struct gsgpu_bo *bo);
-int gsgpu_bo_evict_vram(struct gsgpu_device *adev);
+void gsgpu_bo_unpin(struct gsgpu_bo *bo);
 int gsgpu_bo_init(struct gsgpu_device *adev);
-int gsgpu_bo_late_init(struct gsgpu_device *adev);
 void gsgpu_bo_fini(struct gsgpu_device *adev);
-int gsgpu_bo_fbdev_mmap(struct gsgpu_bo *bo,
-				struct vm_area_struct *vma);
 int gsgpu_bo_set_tiling_flags(struct gsgpu_bo *bo, u64 tiling_flags);
 void gsgpu_bo_get_tiling_flags(struct gsgpu_bo *bo, u64 *tiling_flags);
 int gsgpu_bo_set_metadata (struct gsgpu_bo *bo, void *metadata,
@@ -256,24 +294,23 @@ int gsgpu_bo_get_metadata(struct gsgpu_bo *bo, void *buffer,
 			   uint64_t *flags);
 void gsgpu_bo_move_notify(struct ttm_buffer_object *bo,
 			   bool evict,
-			   struct ttm_mem_reg *new_mem);
-int gsgpu_bo_fault_reserve_notify(struct ttm_buffer_object *bo);
+			   struct ttm_resource *new_mem);
+void gsgpu_bo_release_notify(struct ttm_buffer_object *bo);
+vm_fault_t gsgpu_bo_fault_reserve_notify(struct ttm_buffer_object *bo);
 void gsgpu_bo_fence(struct gsgpu_bo *bo, struct dma_fence *fence,
 		     bool shared);
+int gsgpu_bo_sync_wait_resv(struct gsgpu_device *adev, struct dma_resv *resv,
+			     enum gsgpu_sync_mode sync_mode, void *owner,
+			     bool intr);
+int gsgpu_bo_sync_wait(struct gsgpu_bo *bo, void *owner, bool intr);
 u64 gsgpu_bo_gpu_offset(struct gsgpu_bo *bo);
-int gsgpu_bo_backup_to_shadow(struct gsgpu_device *adev,
-			       struct gsgpu_ring *ring,
-			       struct gsgpu_bo *bo,
-			       struct reservation_object *resv,
-			       struct dma_fence **fence, bool direct);
-int gsgpu_bo_validate(struct gsgpu_bo *bo);
-int gsgpu_bo_restore_from_shadow(struct gsgpu_device *adev,
-				  struct gsgpu_ring *ring,
-				  struct gsgpu_bo *bo,
-				  struct reservation_object *resv,
-				  struct dma_fence **fence,
-				  bool direct);
-uint32_t gsgpu_bo_get_preferred_pin_domain(struct gsgpu_device *adev,
+u64 gsgpu_bo_gpu_offset_no_check(struct gsgpu_bo *bo);
+void gsgpu_bo_get_memory(struct gsgpu_bo *bo, uint64_t *vram_mem,
+				uint64_t *gtt_mem, uint64_t *cpu_mem);
+void gsgpu_bo_add_to_shadow_list(struct gsgpu_bo_vm *vmbo);
+int gsgpu_bo_restore_shadow(struct gsgpu_bo *shadow,
+			     struct dma_fence **fence);
+uint32_t gsgpu_bo_get_preferred_domain(struct gsgpu_device *adev,
 					    uint32_t domain);
 
 /*
@@ -306,7 +343,11 @@ void gsgpu_sa_bo_free(struct gsgpu_device *adev,
 #if defined(CONFIG_DEBUG_FS)
 void gsgpu_sa_bo_dump_debug_info(struct gsgpu_sa_manager *sa_manager,
 					 struct seq_file *m);
+u64 gsgpu_bo_print_info(int id, struct gsgpu_bo *bo, struct seq_file *m);
 #endif
+void gsgpu_debugfs_sa_init(struct gsgpu_device *adev);
+
+bool gsgpu_bo_support_uswc(u64 bo_flags);
 
 
 #endif

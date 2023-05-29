@@ -30,7 +30,7 @@ int gsgpu_cp_enable(struct gsgpu_device *adev, bool enable)
 	} else {
 		tmp &= ~1;
 		for (i = 0; i < adev->gfx.num_gfx_rings; i++)
-			adev->gfx.gfx_ring[i].ready = false;
+			adev->gfx.gfx_ring[i].sched.ready = false;
 	}
 	WREG32(GSGPU_EC_CTRL, tmp);
 	mdelay(100);
@@ -51,7 +51,7 @@ static int gsgpu_init_microcode(struct gsgpu_device *adev)
 	const char *chip_name;
 	char fw_name[30];
 	int err;
-	struct gsgpu_firmware_info *info = NULL;
+	// struct gsgpu_firmware_info *info = NULL;
 
 	DRM_DEBUG("\n");
 
@@ -83,7 +83,7 @@ out:
 
 int gsgpu_cp_gfx_load_microcode(struct gsgpu_device *adev)
 {
-	const struct gfx_firmware_header_v1_0 *cp_hdr;
+	// const struct gfx_firmware_header_v1_0 *cp_hdr;
 	const __le32 *fw_data;
 	unsigned i, fw_size, fw_wptr;
 

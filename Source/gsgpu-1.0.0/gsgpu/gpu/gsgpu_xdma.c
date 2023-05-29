@@ -22,7 +22,7 @@
  * Authors: Alex Deucher
  */
 
-#include <drm/drmP.h>
+#include <linux/module.h>
 #include "gsgpu.h"
 #include "gsgpu_trace.h"
 #include "gsgpu_common.h"
@@ -59,6 +59,7 @@ static int xdma_fill_test(struct gsgpu_ring *ring, long timeout);
 static u64 xdma_ring_get_rptr(struct gsgpu_ring *ring)
 {
 	return ring->adev->wb.wb[ring->rptr_offs];
+	// return *ring->rptr_cpu_addr;
 }
 
 /**
@@ -106,9 +107,12 @@ static void xdma_ring_insert_nop(struct gsgpu_ring *ring, u32 count)
  * Schedule an IB in the DMA ring  .
  */
 static void xdma_ring_emit_ib(struct gsgpu_ring *ring,
-				   struct gsgpu_ib *ib,
-				   unsigned vmid, bool ctx_switch)
+			struct gsgpu_job *job,
+			struct gsgpu_ib *ib,
+			uint32_t flags)
 {
+	unsigned vmid;
+	vmid = job->vmid;
 	gsgpu_ring_write(ring, GSPKT(GSPKT_INDIRECT, 3));
 	gsgpu_ring_write(ring, lower_32_bits(ib->gpu_addr));
 	gsgpu_ring_write(ring, upper_32_bits(ib->gpu_addr));
@@ -156,8 +160,8 @@ static void xdma_gfx_stop(struct gsgpu_device *adev)
 	    (adev->mman.buffer_funcs_ring == xdma1))
 		gsgpu_ttm_set_buffer_funcs_status(adev, false);
 
-	xdma0->ready = false;
-	xdma1->ready = false;
+	xdma0->sched.ready = false;
+	xdma1->sched.ready = false;
 }
 
 /**
@@ -202,7 +206,7 @@ static int xdma_gfx_resume(struct gsgpu_device *adev)
 		WREG32(GSGPU_XDMA_CB_BASE_LO_OFFSET, lower_32_bits(ring->gpu_addr));
 		WREG32(GSGPU_XDMA_CB_BASE_HI_OFFSET, upper_32_bits(ring->gpu_addr));
 
-		ring->ready = true;
+		ring->sched.ready = true;
 	}
 
 	/* unhalt the MEs */
@@ -285,7 +289,7 @@ static int xdma_ring_test_ring(struct gsgpu_ring *ring)
 		tmp = le32_to_cpu(adev->wb.wb[index]);
 		if (tmp == 0xDEADBEEF)
 			break;
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 
 	if (i < adev->usec_timeout) {
@@ -329,7 +333,7 @@ static int xdma_ring_test_ib(struct gsgpu_ring *ring, long timeout)
 	tmp = 0xCAFEDEAD;
 	adev->wb.wb[index] = cpu_to_le32(tmp);
 	memset(&ib, 0, sizeof(ib));
-	r = gsgpu_ib_get(adev, NULL, 256, &ib);
+	r = gsgpu_ib_get(adev, NULL, 256, GSGPU_IB_POOL_DIRECT, &ib);
 	if (r) {
 		DRM_ERROR("gsgpu: failed to get ib (%ld).\n", r);
 		goto err0;
@@ -588,7 +592,7 @@ static int xdma_set_pte_pde_test(struct gsgpu_ring *ring, long timeout)
 	}
 
 	memset(&ib, 0 , sizeof(ib));
-	r = gsgpu_ib_get(ldev, NULL, 256, &ib);
+	r = gsgpu_ib_get(ldev, NULL, 256, GSGPU_IB_POOL_DIRECT, &ib);
 	if (r) {
 		DRM_ERROR("xdma_set_pte_pde_test : gsgpu_ib_get error\r\n");
 		goto bo_free;
@@ -680,7 +684,7 @@ static int xdma_copy_pte_test(struct gsgpu_ring *ring, long timeout)
 	}
 
 	memset(&ib, 0 , sizeof(ib));
-	r = gsgpu_ib_get(ldev, NULL, 256, &ib);
+	r = gsgpu_ib_get(ldev, NULL, 256, GSGPU_IB_POOL_DIRECT, &ib);
 	if (r) {
 		DRM_ERROR("xdma_copy_pte_test : gsgpu_ib_get error\r\n");
 		goto bo_free_gtt;
@@ -746,19 +750,19 @@ static int xdma_sw_init(void *handle)
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
 	/* XDMA trap event */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_SDMA_TRAP,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_SDMA_TRAP,
 			      &adev->xdma.trap_irq);
 	if (r)
 		return r;
 
 	/* XDMA Privileged inst */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, 241,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, 241,
 			      &adev->xdma.illegal_inst_irq);
 	if (r)
 		return r;
 
 	/* XDMA Privileged inst */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_SDMA_SRBM_WRITE,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_SDMA_SRBM_WRITE,
 			      &adev->xdma.illegal_inst_irq);
 	if (r)
 		return r;
@@ -772,7 +776,8 @@ static int xdma_sw_init(void *handle)
 				     &adev->xdma.trap_irq,
 				     (i == 0) ?
 				     GSGPU_XDMA_IRQ_TRAP0 :
-				     GSGPU_XDMA_IRQ_TRAP1);
+				     GSGPU_XDMA_IRQ_TRAP1,
+					 GSGPU_RING_PRIO_DEFAULT, NULL);
 		if (r)
 			return r;
 	}
@@ -904,8 +909,11 @@ static int xdma_process_illegal_inst_irq(struct gsgpu_device *adev,
 					      struct gsgpu_irq_src *source,
 					      struct gsgpu_iv_entry *entry)
 {
+	u8 instance_id;
+
 	DRM_ERROR("Illegal instruction in XDMA command stream\n");
-	schedule_work(&adev->reset_work);
+	instance_id = (entry->ring_id & 0x3) >> 0;
+	drm_sched_fault(&adev->xdma.instance[instance_id].ring.sched);
 	return 0;
 }
 
@@ -988,9 +996,13 @@ static void xdma_set_irq_funcs(struct gsgpu_device *adev)
  * registered as the asic copy callback.
  */
 static void xdma_emit_copy_buffer(struct gsgpu_ib *ib,
-					u64 src_offset,
-					u64 dst_offset,
-					u32 byte_count)
+				 /* src addr in bytes */
+				 uint64_t src_offset,
+				 /* dst addr in bytes */
+				 uint64_t dst_offset,
+				 /* number of byte to transfer */
+				 uint32_t byte_count,
+				 bool tmz)
 {
 	uint32_t cpp = 8;
 	uint32_t width , height;
@@ -1094,7 +1106,7 @@ static int xdma_fill_test(struct gsgpu_ring *ring, long timeout)
 	}
 
 	memset(&ib, 0 , sizeof(ib));
-	r = gsgpu_ib_get(ldev, NULL, 256, &ib);
+	r = gsgpu_ib_get(ldev, NULL, 256, GSGPU_IB_POOL_DIRECT, &ib);
 	if (r) {
 		DRM_ERROR("xdma_fill_test : gsgpu_ib_get error\r\n");
 		goto bo_free;
@@ -1147,10 +1159,8 @@ static const struct gsgpu_buffer_funcs xdma_buffer_funcs = {
 
 static void xdma_set_buffer_funcs(struct gsgpu_device *adev)
 {
-	if (adev->mman.buffer_funcs == NULL) {
 		adev->mman.buffer_funcs = &xdma_buffer_funcs;
 		adev->mman.buffer_funcs_ring = &adev->xdma.instance[0].ring;
-	}
 }
 
 static const struct gsgpu_vm_pte_funcs xdma_vm_pte_funcs = {
@@ -1165,14 +1175,12 @@ static void xdma_set_vm_pte_funcs(struct gsgpu_device *adev)
 {
 	unsigned i;
 
-	if (adev->vm_manager.vm_pte_funcs == NULL) {
-		adev->vm_manager.vm_pte_funcs = &xdma_vm_pte_funcs;
-		for (i = 0; i < adev->xdma.num_instances; i++)
-			adev->vm_manager.vm_pte_rings[i] =
-				&adev->xdma.instance[i].ring;
-
-		adev->vm_manager.vm_pte_num_rings = adev->xdma.num_instances;
+	adev->vm_manager.vm_pte_funcs = &xdma_vm_pte_funcs;
+	for (i = 0; i < adev->xdma.num_instances; i++) {
+		adev->vm_manager.vm_pte_scheds[i] =
+			 &adev->xdma.instance[i].ring.sched;
 	}
+	adev->vm_manager.vm_pte_num_scheds = adev->xdma.num_instances;
 }
 
 const struct gsgpu_ip_block_version xdma_ip_block =
@@ -1183,3 +1191,19 @@ const struct gsgpu_ip_block_version xdma_ip_block =
 	.rev = 0,
 	.funcs = &xdma_ip_funcs,
 };
+
+struct gsgpu_xdma_instance *
+gsgpu_get_xdma_instance(struct gsgpu_ring *ring)
+{
+	struct gsgpu_device *adev = ring->adev;
+	int i;
+
+	for (i = 0; i < adev->xdma.num_instances; i++)
+		if (&adev->xdma.instance[i].ring == ring)
+			break;
+
+	if (i < GSGPU_MAX_XDMA_INSTANCES)
+		return &adev->xdma.instance[i];
+	else
+		return NULL;
+}

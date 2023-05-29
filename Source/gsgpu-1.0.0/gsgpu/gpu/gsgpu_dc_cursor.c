@@ -167,7 +167,7 @@ bool crtc_cursor_set(struct gsgpu_dc_crtc *crtc, struct dc_cursor_info *cursor)
 void handle_cursor_update(struct drm_plane *plane,
 			  struct drm_plane_state *old_plane_state)
 {
-	struct gsgpu_device *adev = plane->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(plane->dev);
 	struct gsgpu_framebuffer *afb = to_gsgpu_framebuffer(plane->state->fb);
 	struct drm_crtc *crtc = afb ? plane->state->crtc : old_plane_state->crtc;
 	struct gsgpu_crtc *gsgpu_crtc = to_gsgpu_crtc(crtc);

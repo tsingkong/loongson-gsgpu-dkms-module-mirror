@@ -24,61 +24,27 @@
  */
 
 #include <linux/kthread.h>
-#include <drm/drmP.h>
-#include <linux/debugfs.h>
+#include <linux/pci.h>
+#include <linux/uaccess.h>
+#include <linux/pm_runtime.h>
+#include <drm/drm.h>
+
 #include "gsgpu.h"
+#include "gsgpu_umr.h"
 
-/**
- * gsgpu_debugfs_add_files - Add simple debugfs entries
- *
- * @adev:  Device to attach debugfs entries to
- * @files:  Array of function callbacks that respond to reads
- * @nfiles: Number of callbacks to register
- *
- */
-int gsgpu_debugfs_add_files(struct gsgpu_device *adev,
-			     const struct drm_info_list *files,
-			     unsigned nfiles)
-{
-	unsigned i;
-
-	for (i = 0; i < adev->debugfs_count; i++) {
-		if (adev->debugfs[i].files == files) {
-			/* Already registered */
-			return 0;
-		}
-	}
-
-	i = adev->debugfs_count + 1;
-	if (i > GSGPU_DEBUGFS_MAX_COMPONENTS) {
-		DRM_ERROR("Reached maximum number of debugfs components.\n");
-		DRM_ERROR("Report so we increase "
-			  "GSGPU_DEBUGFS_MAX_COMPONENTS.\n");
-		return -EINVAL;
-	}
-	adev->debugfs[adev->debugfs_count].files = files;
-	adev->debugfs[adev->debugfs_count].num_files = nfiles;
-	adev->debugfs_count = i;
-#if defined(CONFIG_DEBUG_FS)
-	drm_debugfs_create_files(files, nfiles,
-				 adev->ddev->primary->debugfs_root,
-				 adev->ddev->primary);
-#endif
-	return 0;
-}
+#include "gsgpu_reset.h"
 
 #if defined(CONFIG_DEBUG_FS)
 
-/**
+/*
  * gsgpu_debugfs_regs_read - Callback for reading MMIO registers
  */
 static ssize_t gsgpu_debugfs_regs_read(struct file *f, char __user *buf,
 					size_t size, loff_t *pos)
 {
-	struct gsgpu_device *adev = file_inode(f)->i_private;
-
+	struct gsgpu_debugfs_regs2_data *rd = f->private_data;
+	struct gsgpu_device *adev = rd->adev;
 	dev_err(adev->dev, "%s Not Implement\n", __func__);
-
 	return -EINVAL;
 }
 
@@ -88,10 +54,64 @@ static ssize_t gsgpu_debugfs_regs_read(struct file *f, char __user *buf,
 static ssize_t gsgpu_debugfs_regs_write(struct file *f, const char __user *buf,
 					 size_t size, loff_t *pos)
 {
-	struct gsgpu_device *adev = file_inode(f)->i_private;
-
+	struct gsgpu_debugfs_regs2_data *rd = f->private_data;
+	struct gsgpu_device *adev = rd->adev;
 	dev_err(adev->dev, "%s Not Implement\n", __func__);
+	return -EINVAL;
+}
 
+static int gsgpu_debugfs_regs2_open(struct inode *inode, struct file *file)
+{
+	struct gsgpu_debugfs_regs2_data *rd;
+
+	rd = kzalloc(sizeof *rd, GFP_KERNEL);
+	if (!rd)
+		return -ENOMEM;
+	rd->adev = file_inode(file)->i_private;
+	file->private_data = rd;
+	mutex_init(&rd->lock);
+
+	return 0;
+}
+
+static int gsgpu_debugfs_regs2_release(struct inode *inode, struct file *file)
+{
+	struct gsgpu_debugfs_regs2_data *rd = file->private_data;
+	mutex_destroy(&rd->lock);
+	kfree(file->private_data);
+	return 0;
+}
+
+static long gsgpu_debugfs_regs2_ioctl(struct file *f, unsigned int cmd, unsigned long data)
+{
+	struct gsgpu_debugfs_regs2_data *rd = f->private_data;
+	int r;
+
+	switch (cmd) {
+	case GSGPU_DEBUGFS_REGS2_IOC_SET_STATE:
+		mutex_lock(&rd->lock);
+		r = copy_from_user(&rd->id, (struct gsgpu_debugfs_regs2_iocdata *)data, sizeof rd->id);
+		mutex_unlock(&rd->lock);
+		return r ? -EINVAL : 0;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static ssize_t gsgpu_debugfs_regs2_read(struct file *f, char __user *buf, size_t size, loff_t *pos)
+{
+	struct gsgpu_debugfs_regs2_data *rd = f->private_data;
+	struct gsgpu_device *adev = rd->adev;
+	dev_err(adev->dev, "%s Not Implement\n", __func__);
+	return -EINVAL;
+}
+
+static ssize_t gsgpu_debugfs_regs2_write(struct file *f, const char __user *buf, size_t size, loff_t *pos)
+{
+	struct gsgpu_debugfs_regs2_data *rd = f->private_data;
+	struct gsgpu_device *adev = rd->adev;
+	dev_err(adev->dev, "%s Not Implement\n", __func__);
 	return -EINVAL;
 }
 
@@ -125,7 +145,7 @@ static ssize_t gsgpu_debugfs_gca_config_read(struct file *f, char __user *buf,
 		return -ENOMEM;
 
 	/* version, increment each time something is added */
-	config[no_regs++] = 3;
+	config[no_regs++] = 5;
 	config[no_regs++] = adev->gfx.config.max_shader_engines;
 	config[no_regs++] = adev->gfx.config.max_tile_pipes;
 	config[no_regs++] = adev->gfx.config.max_cu_per_sh;
@@ -159,6 +179,13 @@ static ssize_t gsgpu_debugfs_gca_config_read(struct file *f, char __user *buf,
 	config[no_regs++] = adev->pdev->subsystem_device;
 	config[no_regs++] = adev->pdev->subsystem_vendor;
 
+	/* rev==4 APU flag */
+	config[no_regs++] = adev->flags & GSGPU_IS_APU ? 1 : 0;
+
+	/* rev==5 PG/CG flag upper 32bit */
+	config[no_regs++] = upper_32_bits(adev->pg_flags);
+	config[no_regs++] = upper_32_bits(adev->cg_flags);
+
 	while (size && (*pos < no_regs * 4)) {
 		uint32_t value;
 
@@ -189,7 +216,7 @@ static ssize_t gsgpu_debugfs_gca_config_read(struct file *f, char __user *buf,
  *
  * The offset is treated as the BYTE address of one of the sensors
  * enumerated in amd/include/kgd_pp_interface.h under the
- * 'amd_pp_sensors' enumeration.  For instance to read the UVD VCLK
+ * 'gsgpu_pp_sensors' enumeration.  For instance to read the UVD VCLK
  * you would use the offset 3 * 4 = 12.
  */
 static ssize_t gsgpu_debugfs_sensor_read(struct file *f, char __user *buf,
@@ -217,14 +244,14 @@ static ssize_t gsgpu_debugfs_sensor_read(struct file *f, char __user *buf,
  *
  * The returned data begins with one DWORD of version information
  * Followed by WAVE STATUS registers relevant to the GFX IP version
- * being used.  See gfx_read_wave_data() for an example output.
+ * being used.  See gfx_v8_0_read_wave_data() for an example output.
  */
 static ssize_t gsgpu_debugfs_wave_read(struct file *f, char __user *buf,
 					size_t size, loff_t *pos)
 {
 	struct gsgpu_device *adev = f->f_inode->i_private;
 	int r, x;
-	ssize_t result=0;
+	ssize_t result = 0;
 	uint32_t offset, se, sh, cu, wave, simd, data[32];
 
 	if (size & 3 || *pos & 3)
@@ -238,25 +265,38 @@ static ssize_t gsgpu_debugfs_wave_read(struct file *f, char __user *buf,
 	wave = (*pos & GENMASK_ULL(36, 31)) >> 31;
 	simd = (*pos & GENMASK_ULL(44, 37)) >> 37;
 
+	r = pm_runtime_get_sync(adev_to_drm(adev)->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
+		return r;
+	}
+
 	/* switch to the specific se/sh/cu */
 	mutex_lock(&adev->grbm_idx_mutex);
+	// gsgpu_gfx_select_se_sh(adev, se, sh, cu);
 
 	x = 0;
 	if (adev->gfx.funcs->read_wave_data)
 		adev->gfx.funcs->read_wave_data(adev, simd, wave, data, &x);
 
+	// gsgpu_gfx_select_se_sh(adev, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 	mutex_unlock(&adev->grbm_idx_mutex);
 
-	if (!x)
+	pm_runtime_mark_last_busy(adev_to_drm(adev)->dev);
+	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
+
+	if (!x) {
 		return -EINVAL;
+	}
 
 	while (size && (offset < x * 4)) {
 		uint32_t value;
 
 		value = data[offset >> 2];
 		r = put_user(value, (uint32_t *)buf);
-		if (r)
+		if (r) {
 			return r;
+		}
 
 		result += 4;
 		buf += 4;
@@ -297,11 +337,11 @@ static ssize_t gsgpu_debugfs_gpr_read(struct file *f, char __user *buf,
 	ssize_t result = 0;
 	uint32_t offset, se, sh, cu, wave, simd, thread, bank, *data;
 
-	if (size & 3 || *pos & 3)
+	if (size > 4096 || size & 3 || *pos & 3)
 		return -EINVAL;
 
 	/* decode offset */
-	offset = *pos & GENMASK_ULL(11, 0);
+	offset = (*pos & GENMASK_ULL(11, 0)) >> 2;
 	se = (*pos & GENMASK_ULL(19, 12)) >> 12;
 	sh = (*pos & GENMASK_ULL(27, 20)) >> 20;
 	cu = (*pos & GENMASK_ULL(35, 28)) >> 28;
@@ -314,8 +354,13 @@ static ssize_t gsgpu_debugfs_gpr_read(struct file *f, char __user *buf,
 	if (!data)
 		return -ENOMEM;
 
+	r = pm_runtime_get_sync(adev_to_drm(adev)->dev);
+	if (r < 0)
+		goto err;
+
 	/* switch to the specific se/sh/cu */
 	mutex_lock(&adev->grbm_idx_mutex);
+	// gsgpu_gfx_select_se_sh(adev, se, sh, cu);
 
 	if (bank == 0) {
 		if (adev->gfx.funcs->read_wave_vgprs)
@@ -325,15 +370,18 @@ static ssize_t gsgpu_debugfs_gpr_read(struct file *f, char __user *buf,
 			adev->gfx.funcs->read_wave_sgprs(adev, simd, wave, offset, size>>2, data);
 	}
 
+	// gsgpu_gfx_select_se_sh(adev, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF);
 	mutex_unlock(&adev->grbm_idx_mutex);
+
+	pm_runtime_mark_last_busy(adev_to_drm(adev)->dev);
+	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
 
 	while (size) {
 		uint32_t value;
 
-		value = data[offset++];
+		value = data[result >> 2];
 		r = put_user(value, (uint32_t *)buf);
 		if (r) {
-			result = r;
 			goto err;
 		}
 
@@ -342,10 +390,24 @@ static ssize_t gsgpu_debugfs_gpr_read(struct file *f, char __user *buf,
 		size -= 4;
 	}
 
-err:
 	kfree(data);
 	return result;
+
+err:
+	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
+	kfree(data);
+	return r;
 }
+
+static const struct file_operations gsgpu_debugfs_regs2_fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = gsgpu_debugfs_regs2_ioctl,
+	.read = gsgpu_debugfs_regs2_read,
+	.write = gsgpu_debugfs_regs2_write,
+	.open = gsgpu_debugfs_regs2_open,
+	.release = gsgpu_debugfs_regs2_release,
+	.llseek = default_llseek
+};
 
 static const struct file_operations gsgpu_debugfs_regs_fops = {
 	.owner = THIS_MODULE,
@@ -379,6 +441,7 @@ static const struct file_operations gsgpu_debugfs_gpr_fops = {
 
 static const struct file_operations *debugfs_regs[] = {
 	&gsgpu_debugfs_regs_fops,
+	&gsgpu_debugfs_regs2_fops,
 	&gsgpu_debugfs_gca_config_fops,
 	&gsgpu_debugfs_sensors_fops,
 	&gsgpu_debugfs_wave_fops,
@@ -387,6 +450,7 @@ static const struct file_operations *debugfs_regs[] = {
 
 static const char *debugfs_regs_names[] = {
 	"gsgpu_regs",
+	"gsgpu_regs2",
 	"gsgpu_gca_config",
 	"gsgpu_sensors",
 	"gsgpu_wave",
@@ -395,54 +459,43 @@ static const char *debugfs_regs_names[] = {
 
 /**
  * gsgpu_debugfs_regs_init -	Initialize debugfs entries that provide
- * 								register access.
+ * 				register access.
  *
  * @adev: The device to attach the debugfs entries to
  */
 int gsgpu_debugfs_regs_init(struct gsgpu_device *adev)
 {
-	struct drm_minor *minor = adev->ddev->primary;
+	struct drm_minor *minor = adev_to_drm(adev)->primary;
 	struct dentry *ent, *root = minor->debugfs_root;
-	unsigned i, j;
+	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(debugfs_regs); i++) {
 		ent = debugfs_create_file(debugfs_regs_names[i],
 					  S_IFREG | S_IRUGO, root,
 					  adev, debugfs_regs[i]);
-		if (IS_ERR(ent)) {
-			for (j = 0; j < i; j++) {
-				debugfs_remove(adev->debugfs_regs[i]);
-				adev->debugfs_regs[i] = NULL;
-			}
-			return PTR_ERR(ent);
-		}
-
-		if (!i)
+		if (!i && !IS_ERR_OR_NULL(ent))
 			i_size_write(ent->d_inode, adev->rmmio_size);
-		adev->debugfs_regs[i] = ent;
 	}
 
 	return 0;
 }
 
-void gsgpu_debugfs_regs_cleanup(struct gsgpu_device *adev)
+static int gsgpu_debugfs_test_ib_show(struct seq_file *m, void *unused)
 {
-	unsigned i;
-
-	for (i = 0; i < ARRAY_SIZE(debugfs_regs); i++) {
-		if (adev->debugfs_regs[i]) {
-			debugfs_remove(adev->debugfs_regs[i]);
-			adev->debugfs_regs[i] = NULL;
-		}
-	}
-}
-
-static int gsgpu_debugfs_test_ib(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)m->private;
+	struct drm_device *dev = adev_to_drm(adev);
 	int r = 0, i;
+
+	r = pm_runtime_get_sync(dev->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(dev->dev);
+		return r;
+	}
+
+	/* Avoid accidently unparking the sched thread during GPU reset */
+	r = down_write_killable(&adev->reset_domain->sem);
+	if (r)
+		return r;
 
 	/* hold on the scheduler */
 	for (i = 0; i < GSGPU_MAX_RINGS; i++) {
@@ -469,15 +522,18 @@ static int gsgpu_debugfs_test_ib(struct seq_file *m, void *data)
 		kthread_unpark(ring->sched.thread);
 	}
 
+	up_write(&adev->reset_domain->sem);
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
 	return 0;
 }
 
-static int gsgpu_debugfs_test_ring(struct seq_file *m, void *data)
+static int gsgpu_debugfs_test_ring_show(struct seq_file *m, void *data)
 {
-
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)m->private;
+	// struct drm_device *dev = adev_to_drm(adev);
 	struct gsgpu_ring *ring;
 	int r = 0, i;
 
@@ -520,12 +576,10 @@ static int gsgpu_debugfs_test_ring(struct seq_file *m, void *data)
 	return 0;
 }
 
-static int gsgpu_debugfs_test_xdma(struct seq_file *m, void *data)
+static int gsgpu_debugfs_test_xdma_show(struct seq_file *m, void *data)
 {
-
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)m->private;
+	// struct drm_device *dev = adev_to_drm(adev);
 	struct gsgpu_ring *ring;
 	int r = 0, i;
 
@@ -560,49 +614,471 @@ static int gsgpu_debugfs_test_xdma(struct seq_file *m, void *data)
 	return 0;
 }
 
-static int gsgpu_debugfs_get_vbios_dump(struct seq_file *m, void *data)
+static int gsgpu_debugfs_evict_vram(void *data, u64 *val)
 {
-	struct drm_info_node *node = (struct drm_info_node *) m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)data;
+	struct drm_device *dev = adev_to_drm(adev);
+	int r;
 
-	seq_write(m, adev->bios, adev->bios_size);
+	r = pm_runtime_get_sync(dev->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(dev->dev);
+		return r;
+	}
+
+	*val = gsgpu_ttm_evict_resources(adev, TTM_PL_VRAM);
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
 	return 0;
 }
 
-static int gsgpu_debugfs_evict_vram(struct seq_file *m, void *data)
-{
-	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
 
-	seq_printf(m, "(%d)\n", gsgpu_bo_evict_vram(adev));
+static int gsgpu_debugfs_evict_gtt(void *data, u64 *val)
+{
+	struct gsgpu_device *adev = (struct gsgpu_device *)data;
+	struct drm_device *dev = adev_to_drm(adev);
+	int r;
+
+	r = pm_runtime_get_sync(dev->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(dev->dev);
+		return r;
+	}
+
+	*val = gsgpu_ttm_evict_resources(adev, TTM_PL_TT);
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
 	return 0;
 }
 
-static int gsgpu_debugfs_evict_gtt(struct seq_file *m, void *data)
+static int gsgpu_debugfs_benchmark(void *data, u64 val)
 {
-	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)data;
+	struct drm_device *dev = adev_to_drm(adev);
+	int r;
 
-	seq_printf(m, "(%d)\n", ttm_bo_evict_mm(&adev->mman.bdev, TTM_PL_TT));
-	return 0;
+	r = pm_runtime_get_sync(dev->dev);
+	if (r < 0) {
+		pm_runtime_put_autosuspend(dev->dev);
+		return r;
+	}
+
+	r = gsgpu_benchmark(adev, val);
+
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
+	return r;
 }
 
-static const struct drm_info_list gsgpu_debugfs_list[] = {
-	{"gsgpu_vbios", gsgpu_debugfs_get_vbios_dump},
-	{"gsgpu_test_ib", &gsgpu_debugfs_test_ib},
-	{"gsgpu_test_ring", &gsgpu_debugfs_test_ring},
-	{"gsgpu_test_xdma", &gsgpu_debugfs_test_xdma},
-	{"gsgpu_evict_vram", &gsgpu_debugfs_evict_vram},
-	{"gsgpu_evict_gtt", &gsgpu_debugfs_evict_gtt},
+static int gsgpu_debugfs_vm_info_show(struct seq_file *m, void *unused)
+{
+	struct gsgpu_device *adev = (struct gsgpu_device *)m->private;
+	struct drm_device *dev = adev_to_drm(adev);
+	struct drm_file *file;
+	int r;
+
+	r = mutex_lock_interruptible(&dev->filelist_mutex);
+	if (r)
+		return r;
+
+	list_for_each_entry(file, &dev->filelist, lhead) {
+		struct gsgpu_fpriv *fpriv = file->driver_priv;
+		struct gsgpu_vm *vm = &fpriv->vm;
+
+		seq_printf(m, "pid:%d\tProcess:%s ----------\n",
+				vm->task_info.pid, vm->task_info.process_name);
+		r = gsgpu_bo_reserve(vm->root.bo, true);
+		if (r)
+			break;
+		gsgpu_debugfs_vm_bo_info(vm, m);
+		gsgpu_bo_unreserve(vm->root.bo);
+	}
+
+	mutex_unlock(&dev->filelist_mutex);
+
+	return r;
+}
+
+DEFINE_SHOW_ATTRIBUTE(gsgpu_debugfs_test_ib);
+DEFINE_SHOW_ATTRIBUTE(gsgpu_debugfs_vm_info);
+DEFINE_SHOW_ATTRIBUTE(gsgpu_debugfs_test_ring);
+DEFINE_SHOW_ATTRIBUTE(gsgpu_debugfs_test_xdma);
+DEFINE_DEBUGFS_ATTRIBUTE(gsgpu_evict_vram_fops, gsgpu_debugfs_evict_vram,
+			 NULL, "%lld\n");
+DEFINE_DEBUGFS_ATTRIBUTE(gsgpu_evict_gtt_fops, gsgpu_debugfs_evict_gtt,
+			 NULL, "%lld\n");
+DEFINE_DEBUGFS_ATTRIBUTE(gsgpu_benchmark_fops, NULL, gsgpu_debugfs_benchmark,
+			 "%lld\n");
+
+static void gsgpu_ib_preempt_fences_swap(struct gsgpu_ring *ring,
+					  struct dma_fence **fences)
+{
+	struct gsgpu_fence_driver *drv = &ring->fence_drv;
+	uint32_t sync_seq, last_seq;
+
+	last_seq = atomic_read(&ring->fence_drv.last_seq);
+	sync_seq = ring->fence_drv.sync_seq;
+
+	last_seq &= drv->num_fences_mask;
+	sync_seq &= drv->num_fences_mask;
+
+	do {
+		struct dma_fence *fence, **ptr;
+
+		++last_seq;
+		last_seq &= drv->num_fences_mask;
+		ptr = &drv->fences[last_seq];
+
+		fence = rcu_dereference_protected(*ptr, 1);
+		RCU_INIT_POINTER(*ptr, NULL);
+
+		if (!fence)
+			continue;
+
+		fences[last_seq] = fence;
+
+	} while (last_seq != sync_seq);
+}
+
+static void gsgpu_ib_preempt_signal_fences(struct dma_fence **fences,
+					    int length)
+{
+	int i;
+	struct dma_fence *fence;
+
+	for (i = 0; i < length; i++) {
+		fence = fences[i];
+		if (!fence)
+			continue;
+		dma_fence_signal(fence);
+		dma_fence_put(fence);
+	}
+}
+
+static void gsgpu_ib_preempt_job_recovery(struct drm_gpu_scheduler *sched)
+{
+	struct drm_sched_job *s_job;
+	struct dma_fence *fence;
+
+	spin_lock(&sched->job_list_lock);
+	list_for_each_entry(s_job, &sched->pending_list, list) {
+		fence = sched->ops->run_job(s_job);
+		dma_fence_put(fence);
+	}
+	spin_unlock(&sched->job_list_lock);
+}
+
+static void gsgpu_ib_preempt_mark_partial_job(struct gsgpu_ring *ring)
+{
+	struct gsgpu_job *job;
+	struct drm_sched_job *s_job, *tmp;
+	uint32_t preempt_seq;
+	struct dma_fence *fence, **ptr;
+	struct gsgpu_fence_driver *drv = &ring->fence_drv;
+	struct drm_gpu_scheduler *sched = &ring->sched;
+	bool preempted = true;
+
+	if (ring->funcs->type != GSGPU_RING_TYPE_GFX)
+		return;
+
+	preempt_seq = le32_to_cpu(*(drv->cpu_addr + 2));
+	if (preempt_seq <= atomic_read(&drv->last_seq)) {
+		preempted = false;
+		goto no_preempt;
+	}
+
+	preempt_seq &= drv->num_fences_mask;
+	ptr = &drv->fences[preempt_seq];
+	fence = rcu_dereference_protected(*ptr, 1);
+
+no_preempt:
+	spin_lock(&sched->job_list_lock);
+	list_for_each_entry_safe(s_job, tmp, &sched->pending_list, list) {
+		if (dma_fence_is_signaled(&s_job->s_fence->finished)) {
+			/* remove job from ring_mirror_list */
+			list_del_init(&s_job->list);
+			sched->ops->free_job(s_job);
+			continue;
+		}
+		job = to_gsgpu_job(s_job);
+		if (preempted && (&job->hw_fence) == fence)
+			/* mark the job as preempted */
+			job->preemption_status |= GSGPU_IB_PREEMPTED;
+	}
+	spin_unlock(&sched->job_list_lock);
+}
+
+static int gsgpu_debugfs_ib_preempt(void *data, u64 val)
+{
+	int r, length;
+	struct gsgpu_ring *ring;
+	struct dma_fence **fences = NULL;
+	struct gsgpu_device *adev = (struct gsgpu_device *)data;
+
+	if (val >= GSGPU_MAX_RINGS)
+		return -EINVAL;
+
+	ring = adev->rings[val];
+
+	if (!ring || !ring->funcs->preempt_ib || !ring->sched.thread)
+		return -EINVAL;
+
+	/* the last preemption failed */
+	if (ring->trail_seq != le32_to_cpu(*ring->trail_fence_cpu_addr))
+		return -EBUSY;
+
+	length = ring->fence_drv.num_fences_mask + 1;
+	fences = kcalloc(length, sizeof(void *), GFP_KERNEL);
+	if (!fences)
+		return -ENOMEM;
+
+	/* Avoid accidently unparking the sched thread during GPU reset */
+	r = down_read_killable(&adev->reset_domain->sem);
+	if (r)
+		goto pro_end;
+
+	/* stop the scheduler */
+	kthread_park(ring->sched.thread);
+
+	/* preempt the IB */
+	r = gsgpu_ring_preempt_ib(ring);
+	if (r) {
+		DRM_WARN("failed to preempt ring %d\n", ring->idx);
+		goto failure;
+	}
+
+	gsgpu_fence_process(ring);
+
+	if (atomic_read(&ring->fence_drv.last_seq) !=
+	    ring->fence_drv.sync_seq) {
+		DRM_INFO("ring %d was preempted\n", ring->idx);
+
+		gsgpu_ib_preempt_mark_partial_job(ring);
+
+		/* swap out the old fences */
+		gsgpu_ib_preempt_fences_swap(ring, fences);
+
+		gsgpu_fence_driver_force_completion(ring);
+
+		/* resubmit unfinished jobs */
+		gsgpu_ib_preempt_job_recovery(&ring->sched);
+
+		/* wait for jobs finished */
+		gsgpu_fence_wait_empty(ring);
+
+		/* signal the old fences */
+		gsgpu_ib_preempt_signal_fences(fences, length);
+	}
+
+failure:
+	/* restart the scheduler */
+	kthread_unpark(ring->sched.thread);
+
+	up_read(&adev->reset_domain->sem);
+
+pro_end:
+	kfree(fences);
+
+	return r;
+}
+
+static int gsgpu_debugfs_sclk_set(void *data, u64 val)
+{
+	int ret = 0;
+	// uint32_t max_freq, min_freq;
+	struct gsgpu_device *adev = (struct gsgpu_device *)data;
+
+	ret = pm_runtime_get_sync(adev_to_drm(adev)->dev);
+	if (ret < 0) {
+		pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
+		return ret;
+	}
+
+// out:
+	pm_runtime_mark_last_busy(adev_to_drm(adev)->dev);
+	pm_runtime_put_autosuspend(adev_to_drm(adev)->dev);
+
+	return ret;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(fops_ib_preempt, NULL,
+			gsgpu_debugfs_ib_preempt, "%llu\n");
+
+DEFINE_DEBUGFS_ATTRIBUTE(fops_sclk_set, NULL,
+			gsgpu_debugfs_sclk_set, "%llu\n");
+
+static ssize_t gsgpu_reset_dump_register_list_read(struct file *f,
+				char __user *buf, size_t size, loff_t *pos)
+{
+	struct gsgpu_device *adev = (struct gsgpu_device *)file_inode(f)->i_private;
+	char reg_offset[12];
+	int i, ret, len = 0;
+
+	if (*pos)
+		return 0;
+
+	memset(reg_offset, 0, 12);
+	ret = down_read_killable(&adev->reset_domain->sem);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < adev->num_regs; i++) {
+		sprintf(reg_offset, "0x%x\n", adev->reset_dump_reg_list[i]);
+		up_read(&adev->reset_domain->sem);
+		if (copy_to_user(buf + len, reg_offset, strlen(reg_offset)))
+			return -EFAULT;
+
+		len += strlen(reg_offset);
+		ret = down_read_killable(&adev->reset_domain->sem);
+		if (ret)
+			return ret;
+	}
+
+	up_read(&adev->reset_domain->sem);
+	*pos += len;
+
+	return len;
+}
+
+static ssize_t gsgpu_reset_dump_register_list_write(struct file *f,
+			const char __user *buf, size_t size, loff_t *pos)
+{
+	struct gsgpu_device *adev = (struct gsgpu_device *)file_inode(f)->i_private;
+	char reg_offset[11];
+	uint32_t *new = NULL, *tmp = NULL;
+	int ret, i = 0, len = 0;
+
+	do {
+		memset(reg_offset, 0, 11);
+		if (copy_from_user(reg_offset, buf + len,
+					min(10, ((int)size-len)))) {
+			ret = -EFAULT;
+			goto error_free;
+		}
+
+		new = krealloc_array(tmp, i + 1, sizeof(uint32_t), GFP_KERNEL);
+		if (!new) {
+			ret = -ENOMEM;
+			goto error_free;
+		}
+		tmp = new;
+		if (sscanf(reg_offset, "%X %n", &tmp[i], &ret) != 1) {
+			ret = -EINVAL;
+			goto error_free;
+		}
+
+		len += ret;
+		i++;
+	} while (len < size);
+
+	new = kmalloc_array(i, sizeof(uint32_t), GFP_KERNEL);
+	if (!new) {
+		ret = -ENOMEM;
+		goto error_free;
+	}
+	ret = down_write_killable(&adev->reset_domain->sem);
+	if (ret)
+		goto error_free;
+
+	swap(adev->reset_dump_reg_list, tmp);
+	swap(adev->reset_dump_reg_value, new);
+	adev->num_regs = i;
+	up_write(&adev->reset_domain->sem);
+	ret = size;
+
+error_free:
+	if (tmp != new)
+		kfree(tmp);
+	kfree(new);
+	return ret;
+}
+
+static const struct file_operations gsgpu_reset_dump_register_list = {
+	.owner = THIS_MODULE,
+	.read = gsgpu_reset_dump_register_list_read,
+	.write = gsgpu_reset_dump_register_list_write,
+	.llseek = default_llseek
 };
 
 int gsgpu_debugfs_init(struct gsgpu_device *adev)
 {
-	return gsgpu_debugfs_add_files(adev, gsgpu_debugfs_list,
-					ARRAY_SIZE(gsgpu_debugfs_list));
+	struct dentry *root = adev_to_drm(adev)->primary->debugfs_root;
+	struct dentry *ent;
+	int r, i;
+
+	if (!debugfs_initialized())
+		return 0;
+
+	ent = debugfs_create_file("gsgpu_preempt_ib", 0600, root, adev,
+				  &fops_ib_preempt);
+	if (IS_ERR(ent)) {
+		DRM_ERROR("unable to create gsgpu_preempt_ib debugsfs file\n");
+		return PTR_ERR(ent);
+	}
+
+	ent = debugfs_create_file("gsgpu_force_sclk", 0200, root, adev,
+				  &fops_sclk_set);
+	if (IS_ERR(ent)) {
+		DRM_ERROR("unable to create gsgpu_set_sclk debugsfs file\n");
+		return PTR_ERR(ent);
+	}
+
+	/* Register debugfs entries for gsgpu_ttm */
+	gsgpu_ttm_debugfs_init(adev);
+	gsgpu_debugfs_sa_init(adev);
+	gsgpu_debugfs_fence_init(adev);
+	gsgpu_debugfs_gem_init(adev);
+
+	r = gsgpu_debugfs_sema_init(adev);
+	if (r)
+		DRM_ERROR("registering sema debugfs failed (%d).\n", r);
+
+	r = gsgpu_debugfs_regs_init(adev);
+	if (r)
+		DRM_ERROR("registering register debugfs failed (%d).\n", r);
+
+#if defined(CONFIG_DRM_GSGPU_DC)
+	if (adev->dc_enabled)
+		dtn_debugfs_init(adev);
+#endif
+
+	for (i = 0; i < GSGPU_MAX_RINGS; ++i) {
+		struct gsgpu_ring *ring = adev->rings[i];
+
+		if (!ring)
+			continue;
+
+		gsgpu_debugfs_ring_init(adev, ring);
+	}
+
+	debugfs_create_file("gsgpu_evict_vram", 0444, root, adev,
+			    &gsgpu_evict_vram_fops);
+	debugfs_create_file("gsgpu_evict_gtt", 0444, root, adev,
+			    &gsgpu_evict_gtt_fops);
+	debugfs_create_file("gsgpu_test_ib", 0444, root, adev,
+			    &gsgpu_debugfs_test_ib_fops);
+	debugfs_create_file("gsgpu_test_ring", 0444, root, adev,
+			    &gsgpu_debugfs_test_ring_fops);
+	debugfs_create_file("gsgpu_test_xdma", 0444, root, adev,
+			    &gsgpu_debugfs_test_xdma_fops);
+	debugfs_create_file("gsgpu_vm_info", 0444, root, adev,
+			    &gsgpu_debugfs_vm_info_fops);
+	debugfs_create_file("gsgpu_benchmark", 0200, root, adev,
+			    &gsgpu_benchmark_fops);
+	debugfs_create_file("gsgpu_reset_dump_register_list", 0644, root, adev,
+			    &gsgpu_reset_dump_register_list);
+
+	adev->debugfs_vbios_blob.data = adev->bios;
+	adev->debugfs_vbios_blob.size = adev->bios_size;
+	debugfs_create_blob("gsgpu_vbios", 0444, root,
+			    &adev->debugfs_vbios_blob);
+
+	return 0;
 }
 
 #else
@@ -614,5 +1090,4 @@ int gsgpu_debugfs_regs_init(struct gsgpu_device *adev)
 {
 	return 0;
 }
-void gsgpu_debugfs_regs_cleanup(struct gsgpu_device *adev) { }
 #endif

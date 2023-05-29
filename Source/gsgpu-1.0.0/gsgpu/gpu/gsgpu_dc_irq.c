@@ -2,6 +2,10 @@
 /*
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
+#include <drm/drm_fourcc.h>
+#include <drm/drm_modeset_helper.h>
+#include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_vblank.h>
 
 #include "gsgpu.h"
 #include "gsgpu_dc_connector.h"
@@ -22,7 +26,7 @@ static void dc_handle_hpd_irq(void *param)
 	struct gsgpu_connector *aconnector = (struct gsgpu_connector *)param;
 	struct drm_connector *connector = &aconnector->base;
 	struct drm_device *dev = connector->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	enum drm_connector_status old_status;
 
 	mutex_lock(&aconnector->hpd_lock);
@@ -45,7 +49,7 @@ static void dc_handle_i2c_irq(void *param)
 {
 	struct gsgpu_connector *aconnector = (struct gsgpu_connector *)param;
 	struct drm_connector *connector = &aconnector->base;
-	struct gsgpu_device *adev = connector->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(connector->dev);
 	struct gsgpu_dc_i2c *i2c = adev->i2c[connector->index];
 
 	gsgpu_dc_i2c_irq(i2c);
@@ -261,7 +265,7 @@ static void *dc_irq_register_interrupt(struct gsgpu_device *adev,
 
 static void dc_register_vsync_handlers(struct gsgpu_device *adev)
 {
-	struct drm_device *dev = adev->ddev;
+	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_crtc *crtc;
 	struct gsgpu_crtc *acrtc;
 	struct dc_interrupt_params int_params = {0};
@@ -280,7 +284,7 @@ static void dc_register_vsync_handlers(struct gsgpu_device *adev)
 
 static void dc_register_i2c_handlers(struct gsgpu_device *adev)
 {
-	struct drm_device *dev = adev->ddev;
+	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct gsgpu_connector *aconnector;
 	struct dc_interrupt_params int_params = {0};
@@ -299,7 +303,7 @@ static void dc_register_i2c_handlers(struct gsgpu_device *adev)
 
 static void dc_register_hpd_handlers(struct gsgpu_device *adev)
 {
-	struct drm_device *dev = adev->ddev;
+	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct gsgpu_connector *aconnector;
 	struct dc_interrupt_params int_params = {0};
@@ -757,7 +761,7 @@ bool dc_interrupt_enable(struct gsgpu_dc *dc, enum dc_irq_source src, bool enabl
 
 void gsgpu_dc_hpd_init(struct gsgpu_device *adev)
 {
-	struct drm_device *dev = adev->ddev;
+	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct gsgpu_connector *aconnector;
 
@@ -773,7 +777,7 @@ void gsgpu_dc_hpd_init(struct gsgpu_device *adev)
 
 void gsgpu_dc_hpd_disable(struct gsgpu_device *adev)
 {
-	struct drm_device *dev = adev->ddev;
+	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct gsgpu_connector *aconnector;
 

@@ -45,14 +45,15 @@ void hdmi_phy_pll_config(struct gsgpu_device *adev, int index, int clock)
 static int hdmi_set_avi_infoframe(struct drm_encoder *encoder,
 			   struct drm_display_mode *mode)
 {
-	struct gsgpu_device *adev = encoder->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(encoder->dev);
 	struct hdmi_avi_infoframe avi_frame;
 	u8 buffer[HDMI_INFOFRAME_HEADER_SIZE + HDMI_AVI_INFOFRAME_SIZE];
+	struct drm_connector *connector = gsgpu_get_connector_for_encoder(encoder);
 	int err, val;
 	uint8_t *frame;
 	int index = encoder->index;
 
-	err = drm_hdmi_avi_infoframe_from_display_mode(&avi_frame, mode, false);
+	err = drm_hdmi_avi_infoframe_from_display_mode(&avi_frame, connector, mode);
 	if (err < 0) {
 		DRM_ERROR("failed to setup AVI infoframe: %d\n", err);
 		return err;
@@ -106,27 +107,27 @@ static int hdmi_set_avi_infoframe(struct drm_encoder *encoder,
 	return 0;
 }
 
-static void hdmi_enable_avi_infoframe(struct gsgpu_device *adev)
-{
-	u32 value;
+// static void hdmi_enable_avi_infoframe(struct gsgpu_device *adev)
+// {
+// 	u32 value;
 
-	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
-	value |= (1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
-	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
-}
+// 	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
+// 	value |= (1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
+// 	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
+// }
 
-static void hdmi_disable_avi_infoframe(struct gsgpu_device *adev)
-{
-	u32 value;
+// static void hdmi_disable_avi_infoframe(struct gsgpu_device *adev)
+// {
+// 	u32 value;
 
-	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
-	value &= ~(1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
-	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
-}
+// 	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
+// 	value &= ~(1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
+// 	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
+// }
 
 void dc_hdmi_encoder_enable(struct drm_encoder *encoder)
 {
-	struct gsgpu_device *adev = encoder->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(encoder->dev);
 	struct drm_display_mode *mode = &encoder->crtc->state->adjusted_mode;
 	u32 value;
 	u32 index = encoder->index;

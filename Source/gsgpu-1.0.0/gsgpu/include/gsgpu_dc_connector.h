@@ -2,7 +2,7 @@
 #ifndef __GSGPU_DC_CONNECTOR__
 #define __GSGPU_DC_CONNECTOR__
 
-#include <drm/drmP.h>
+#include <drm/drm.h>
 #include "gsgpu.h"
 #include "gsgpu_dc_resource.h"
 

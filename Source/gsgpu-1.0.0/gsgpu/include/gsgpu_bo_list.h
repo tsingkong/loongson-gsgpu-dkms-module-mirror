@@ -26,18 +26,22 @@
 #include <drm/ttm/ttm_execbuf_util.h>
 #include <drm/gsgpu_drm.h>
 
+struct hmm_range;
+
+struct drm_file;
+
 struct gsgpu_device;
 struct gsgpu_bo;
 struct gsgpu_bo_va;
 struct gsgpu_fpriv;
 
 struct gsgpu_bo_list_entry {
-	struct gsgpu_bo		*robj;
 	struct ttm_validate_buffer	tv;
 	struct gsgpu_bo_va		*bo_va;
 	uint32_t			priority;
 	struct page			**user_pages;
-	int				user_invalidated;
+	struct hmm_range		*range;
+	bool				user_invalidated;
 };
 
 struct gsgpu_bo_list {
@@ -45,6 +49,10 @@ struct gsgpu_bo_list {
 	struct kref refcount;
 	unsigned first_userptr;
 	unsigned num_entries;
+
+	/* Protect access during command submission.
+	 */
+	struct mutex bo_list_mutex;
 };
 
 int gsgpu_bo_list_get(struct gsgpu_fpriv *fpriv, int id,
@@ -58,7 +66,7 @@ int gsgpu_bo_create_list_entry_array(struct drm_gsgpu_bo_list_in *in,
 int gsgpu_bo_list_create(struct gsgpu_device *adev,
 				 struct drm_file *filp,
 				 struct drm_gsgpu_bo_list_entry *info,
-				 unsigned num_entries,
+				 size_t num_entries,
 				 struct gsgpu_bo_list **list);
 
 static inline struct gsgpu_bo_list_entry *

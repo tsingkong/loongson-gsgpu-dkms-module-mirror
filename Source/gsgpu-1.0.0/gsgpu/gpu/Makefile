@@ -35,15 +35,17 @@ gsgpu-y := gsgpu_drv.o
 gsgpu-y += gsgpu_device.o gsgpu_kms.o \
 	gsgpu_fence.o gsgpu_ttm.o gsgpu_object.o gsgpu_gart.o \
 	gsgpu_display.o gsgpu_cp.o \
-	gsgpu_fb.o gsgpu_gem.o gsgpu_ring.o \
-	gsgpu_cs.o gsgpu_benchmark.o gsgpu_test.o \
+	gsgpu_gem.o gsgpu_ring.o \
+	gsgpu_cs.o gsgpu_benchmark.o \
 	gsgpu_trace_points.o \
 	gsgpu_sa.o gsgpu_zip_meta.o \
-	gsgpu_prime.o gsgpu_vm.o gsgpu_vm_it.o gsgpu_ib.o \
+	gsgpu_vm.o gsgpu_vm_it.o gsgpu_ib.o \
 	gsgpu_bo_list.o gsgpu_ctx.o gsgpu_sync.o \
 	gsgpu_gtt_mgr.o gsgpu_vram_mgr.o \
-	gsgpu_queue_mgr.o gsgpu_sched.o gsgpu_debugfs.o \
-	gsgpu_ids.o gsgpu_hw_sema.o gsgpu_pm.o
+	gsgpu_sched.o gsgpu_debugfs.o \
+	gsgpu_ids.o gsgpu_hw_sema.o gsgpu_pm.o \
+	gsgpu_dma_buf.o gsgpu_gmc.o gsgpu_preempt_mgr.o \
+	gsgpu_reset.o gsgpu_vm_cpu.o gsgpu_vm_pt.o gsgpu_encoders.o
 
 gsgpu-y += gsgpu_common.o
 
@@ -68,7 +70,7 @@ gsgpu-y += gsgpu_xdma.o
 gsgpu-y += gsgpu_job.o
 
 gsgpu-$(CONFIG_COMPAT) += gsgpu_ioc32.o
-gsgpu-$(CONFIG_MMU_NOTIFIER) += gsgpu_mn.o
+gsgpu-$(CONFIG_MMU_NOTIFIER) += gsgpu_hmm.o
 
 # add DC block
 gsgpu-y += gsgpu_dc_drv.o gsgpu_dc_crtc.o gsgpu_dc_hdmi.o \

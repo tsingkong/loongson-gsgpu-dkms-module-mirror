@@ -1,4 +1,4 @@
-#include <drm/drmP.h>
+#include <drm/drm.h>
 #include <drm/gsgpu_drm.h>
 #include "gsgpu.h"
 #include "gsgpu_hw_sema.h"
@@ -61,7 +61,7 @@ int gsgpu_hw_sema_op_ioctl(struct drm_device *dev, void *data, struct drm_file *
 {
 	uint32_t ret = 0;
 	uint64_t ops;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	struct drm_gsgpu_hw_sema  *drm_sema = data;
 	struct gsgpu_fpriv *fpriv = filp->driver_priv;
 	struct gsgpu_vm *vm = &fpriv->vm;
@@ -132,11 +132,10 @@ void gsgpu_hw_sema_mgr_fini(struct gsgpu_device *adev)
 
 #if defined(CONFIG_DEBUG_FS)
 
-static int gsgpu_debugfs_sema_info(struct seq_file *m, void *data)
+static int gsgpu_debugfs_sema_info_show(struct seq_file *m, void *data)
 {
-	struct drm_info_node *node = (struct drm_info_node *)m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = (struct gsgpu_device *)m->private;
+	// struct drm_device *dev = adev_to_drm(adev);
 	struct gsgpu_hw_sema_mgr *sema_mgr = &adev->hw_sema_mgr;
 	struct gsgpu_hw_sema *sema;
 
@@ -171,14 +170,18 @@ static int gsgpu_debugfs_sema_info(struct seq_file *m, void *data)
 	return 0;
 }
 
-static const struct drm_info_list gsgpu_debugfs_sema_list[] = {
-	{"gsgpu_hw_sema_info", &gsgpu_debugfs_sema_info, 0, NULL},
-};
+DEFINE_SHOW_ATTRIBUTE(gsgpu_debugfs_sema_info);
+
 #endif
+
 int gsgpu_debugfs_sema_init(struct gsgpu_device *adev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	return gsgpu_debugfs_add_files(adev, gsgpu_debugfs_sema_list, 1);
+	struct drm_minor *minor = adev_to_drm(adev)->primary;
+	struct dentry *root = minor->debugfs_root;
+
+	debugfs_create_file("gsgpu_hw_sema_info", 0444, root, adev,
+			    &gsgpu_debugfs_sema_info_fops);
 #endif
 	return 0;
 }

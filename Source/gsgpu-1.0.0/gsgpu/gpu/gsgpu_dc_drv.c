@@ -6,6 +6,11 @@
 #include <linux/pm_runtime.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_fb_helper.h>
+#include <drm/drm_fourcc.h>
+#include <drm/drm_modeset_helper.h>
+#include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_vblank.h>
 
 #include "gsgpu.h"
 #include "gsgpu_dc_plane.h"
@@ -325,7 +330,7 @@ int gsgpu_dc_atomic_commit(struct drm_device *dev,
 {
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	int i;
 
 	/*
@@ -400,11 +405,11 @@ static void gsgpu_dc_do_flip(struct drm_crtc *crtc,
 	struct gsgpu_crtc *acrtc = to_gsgpu_crtc(crtc);
 	struct gsgpu_framebuffer *afb = to_gsgpu_framebuffer(fb);
 	struct gsgpu_bo *abo = gem_to_gsgpu_bo(fb->obj[0]);
-	struct gsgpu_device *adev = crtc->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(crtc->dev);
 
 	/* Prepare wait for target vblank early - before the fence-waits */
 	target_vblank = target - (uint32_t)drm_crtc_vblank_count(crtc) +
-			gsgpu_get_vblank_counter_kms(crtc->dev, acrtc->crtc_id);
+			gsgpu_get_vblank_counter_kms(crtc);
 
 	/* TODO This might fail and hence better not used, wait
 	 * explicitly on fences instead
@@ -418,8 +423,8 @@ static void gsgpu_dc_do_flip(struct drm_crtc *crtc,
 	}
 
 	/* Wait for all fences on this FB */
-	WARN_ON(reservation_object_wait_timeout_rcu(abo->tbo.resv, true, false,
-								    MAX_SCHEDULE_TIMEOUT) < 0);
+	//WARN_ON(reservation_object_wait_timeout_rcu(abo->tbo.resv, true, false,
+	//							    MAX_SCHEDULE_TIMEOUT) < 0);
 
 	gsgpu_bo_unreserve(abo);
 
@@ -427,13 +432,13 @@ static void gsgpu_dc_do_flip(struct drm_crtc *crtc,
 	 * targeted by the flip
 	 */
 	while ((acrtc->enabled &&
-		(gsgpu_display_get_crtc_scanoutpos(adev->ddev, acrtc->crtc_id,
+		(gsgpu_display_get_crtc_scanoutpos(adev_to_drm(adev), acrtc->crtc_id,
 						    0, &vpos, &hpos, NULL,
 						    NULL, &crtc->hwmode)
 		 & (DRM_SCANOUTPOS_VALID | DRM_SCANOUTPOS_IN_VBLANK)) ==
 		(DRM_SCANOUTPOS_VALID | DRM_SCANOUTPOS_IN_VBLANK) &&
 		(int)(target_vblank -
-		  gsgpu_get_vblank_counter_kms(adev->ddev, acrtc->crtc_id)) > 0)) {
+		  gsgpu_get_vblank_counter_kms(crtc)) > 0)) {
 		usleep_range(1000, 1100);
 	}
 
@@ -468,7 +473,7 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 	struct gsgpu_crtc *acrtc = to_gsgpu_crtc(pcrtc);
 	struct drm_crtc_state *new_pcrtc_state =
 			drm_atomic_get_new_crtc_state(state, pcrtc);
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	struct gsgpu_dc_crtc *dc_crtc = adev->dc->link_info[acrtc->crtc_id].crtc;
 	struct drm_framebuffer *modeset_fbs[1];
 	int planes_count = 0;
@@ -519,9 +524,7 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 			 * entire can't wait for VBLANK
 			 * TODO Check if it's correct
 			 */
-			*wait_for_vblank =
-				new_pcrtc_state->pageflip_flags & DRM_MODE_PAGE_FLIP_ASYNC ?
-				false : true;
+			*wait_for_vblank = new_pcrtc_state->async_flip ? false : true;
 
 			/* TODO: Needs rework for multiplane flip */
 			if (plane->type == DRM_PLANE_TYPE_PRIMARY)
@@ -598,7 +601,7 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 void gsgpu_dc_atomic_commit_tail(struct drm_atomic_state *state)
 {
 	struct drm_device *dev = state->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	uint32_t i, j;
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *old_crtc_state, *new_crtc_state;
@@ -667,7 +670,7 @@ void gsgpu_dc_atomic_commit_tail(struct drm_atomic_state *state)
 	 * send vblank event on all events not handled in flip and
 	 * mark consumed event for drm_atomic_helper_commit_hw_done
 	 */
-	spin_lock_irqsave(&adev->ddev->event_lock, flags);
+	spin_lock_irqsave(&adev_to_drm(adev)->event_lock, flags);
 	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
 
 		if (new_crtc_state->event)
@@ -675,7 +678,7 @@ void gsgpu_dc_atomic_commit_tail(struct drm_atomic_state *state)
 
 		new_crtc_state->event = NULL;
 	}
-	spin_unlock_irqrestore(&adev->ddev->event_lock, flags);
+	spin_unlock_irqrestore(&adev_to_drm(adev)->event_lock, flags);
 
 	drm_atomic_helper_commit_hw_done(state);
 
@@ -703,18 +706,18 @@ static int dc_mode_config_init(struct gsgpu_device *adev)
 
 	adev->mode_info.mode_config_initialized = true;
 
-	adev->ddev->mode_config.funcs = (void *)&gsgpu_dc_mode_funcs;
-	adev->ddev->mode_config.helper_private = &gsgpu_dc_mode_config_helper;
+	adev_to_drm(adev)->mode_config.funcs = (void *)&gsgpu_dc_mode_funcs;
+	adev_to_drm(adev)->mode_config.helper_private = &gsgpu_dc_mode_config_helper;
 
-	adev->ddev->mode_config.max_width = 16384;
-	adev->ddev->mode_config.max_height = 16384;
+	adev_to_drm(adev)->mode_config.max_width = 16384;
+	adev_to_drm(adev)->mode_config.max_height = 16384;
 
-	adev->ddev->mode_config.preferred_depth = 24;
-	adev->ddev->mode_config.prefer_shadow = 1;
+	adev_to_drm(adev)->mode_config.preferred_depth = 24;
+	adev_to_drm(adev)->mode_config.prefer_shadow = 1;
 	/* indicate support of immediate flip */
-	adev->ddev->mode_config.async_page_flip = true;
+	adev_to_drm(adev)->mode_config.async_page_flip = true;
 
-	adev->ddev->mode_config.fb_base = adev->gmc.aper_base;
+	// adev_to_drm(adev)->mode_config.fb_base = adev->gmc.aper_base;
 
 	r = gsgpu_display_modeset_create_props(adev);
 	if (r)
@@ -738,7 +741,7 @@ static void gsgpu_attach_encoder_connector(struct gsgpu_device *adev)
 
 static void gsgpu_display_print_display_setup(struct drm_device *dev)
 {
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	struct drm_crtc *crtc;
 	struct gsgpu_crtc *gsgpu_crtc;
 	struct drm_connector *connector;
@@ -786,7 +789,7 @@ static int dc_initialize_drm_device(struct gsgpu_device *adev)
 	}
 
 	for (i = 0; i < 2; i++) {
-		if (gsgpu_dc_crtc_init(adev, &mode_info->planes[i]->base, i)) {
+		if (gsgpu_dc_crtc_init(adev, mode_info->planes[i], i)) {
 			DRM_ERROR("KMS: Failed to initialize crtc\n");
 			goto fail;
 		}
@@ -821,7 +824,7 @@ fail:
 
 static void gsgpu_dc_fini(struct gsgpu_device *adev)
 {
-	drm_mode_config_cleanup(adev->ddev);
+	drm_mode_config_cleanup(adev_to_drm(adev));
 	/*
 	 * TODO: pageflip, vlank interrupt
 	 *
@@ -899,18 +902,18 @@ static int dc_hw_init(void *handle)
 		DRM_ERROR("Failed to initialize sw for display support.\n");
 		goto error;
 	}
-	gsgpu_display_print_display_setup(adev->ddev);
+	gsgpu_display_print_display_setup(adev_to_drm(adev));
 
 	adev->mode_info.num_crtc = adev->dc->links;
-	adev->ddev->mode_config.cursor_width = 32;
-	adev->ddev->mode_config.cursor_height = 32;
+	adev_to_drm(adev)->mode_config.cursor_width = 32;
+	adev_to_drm(adev)->mode_config.cursor_height = 32;
 
-	if (drm_vblank_init(adev->ddev, adev->dc->links)) {
+	if (drm_vblank_init(adev_to_drm(adev), adev->dc->links)) {
 		DRM_ERROR("Failed to initialize vblank.\n");
 		goto error;
 	}
 
-	drm_mode_config_reset(adev->ddev);
+	drm_mode_config_reset(adev_to_drm(adev));
 	gsgpu_dc_meta_set(adev);
 	gsgpu_dc_hpd_init(adev);
 
@@ -941,7 +944,7 @@ static int dc_suspend(void *handle)
 	gsgpu_dc_meta_disable(adev);
 	gsgpu_dc_hpd_disable(adev);
 
-	adev->dc->cached_state = drm_atomic_helper_suspend(adev->ddev);
+	adev->dc->cached_state = drm_atomic_helper_suspend(adev_to_drm(adev));
 
 	return 0;
 }
@@ -949,7 +952,7 @@ static int dc_suspend(void *handle)
 static int dc_resume(void *handle)
 {
 	struct gsgpu_device *adev = handle;
-	struct drm_device *ddev = adev->ddev;
+	struct drm_device *ddev = adev_to_drm(adev);
 	struct gsgpu_dc *dc = adev->dc;
 	struct drm_crtc *crtc;
 	struct drm_crtc_state *new_crtc_state;

@@ -72,7 +72,7 @@ int gsgpu_dc_encoder_init(struct gsgpu_device *adev, int link_index)
 	if (!lencoder)
 		return -ENOMEM;
 
-	res = drm_encoder_init(adev->ddev, &lencoder->base,
+	res = drm_encoder_init(adev_to_drm(adev), &lencoder->base,
 			       &dc_encoder_funcs,
 			       DRM_MODE_ENCODER_TMDS, NULL);
 	if (!res)

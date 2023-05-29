@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
-
+#include <asm/loongson.h>
 #include "gsgpu.h"
 #include "gsgpu_dc_vbios.h"
 #include "gsgpu_dc_resource.h"
@@ -14,6 +14,8 @@
 
 static bool read_bios_from_sysconf(struct gsgpu_dc *dc)
 {
+	return false;
+	/*
 	if (!loongson_sysconf.vgabios_addr)
 		return false;
 
@@ -25,6 +27,7 @@ static bool read_bios_from_sysconf(struct gsgpu_dc *dc)
 	DRM_INFO("GSGPU get vbios from sysconf Sucess \n");
 
 	return true;
+	*/
 }
 
 #ifdef CONFIG_ACPI

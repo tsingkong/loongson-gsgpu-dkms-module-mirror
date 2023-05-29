@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /*
  * Copyright 2014 Advanced Micro Devices, Inc.
  * All Rights Reserved.
@@ -28,14 +29,14 @@
  *    Christian König <christian.koenig@amd.com>
  */
 
-#include <drm/drmP.h>
+#include <linux/dma-fence-chain.h>
+
 #include "gsgpu.h"
 #include "gsgpu_trace.h"
 
 struct gsgpu_sync_entry {
 	struct hlist_node	node;
 	struct dma_fence	*fence;
-	bool	explicit;
 };
 
 static struct kmem_cache *gsgpu_sync_slab;
@@ -50,7 +51,6 @@ static struct kmem_cache *gsgpu_sync_slab;
 void gsgpu_sync_create(struct gsgpu_sync *sync)
 {
 	hash_init(sync->fences);
-	sync->last_vm_update = NULL;
 }
 
 /**
@@ -79,7 +79,7 @@ static bool gsgpu_sync_same_dev(struct gsgpu_device *adev,
 /**
  * gsgpu_sync_get_owner - extract the owner of a fence
  *
- * @fence: fence get the owner from
+ * @f: fence get the owner from
  *
  * Extract who originally created the fence.
  */
@@ -124,7 +124,7 @@ static void gsgpu_sync_keep_later(struct dma_fence **keep,
  * Tries to add the fence to an existing hash entry. Returns true when an entry
  * was found, false otherwise.
  */
-static bool gsgpu_sync_add_later(struct gsgpu_sync *sync, struct dma_fence *f, bool explicit)
+static bool gsgpu_sync_add_later(struct gsgpu_sync *sync, struct dma_fence *f)
 {
 	struct gsgpu_sync_entry *e;
 
@@ -133,10 +133,6 @@ static bool gsgpu_sync_add_later(struct gsgpu_sync *sync, struct dma_fence *f, b
 			continue;
 
 		gsgpu_sync_keep_later(&e->fence, f);
-
-		/* Preserve eplicit flag to not loose pipe line sync */
-		e->explicit |= explicit;
-
 		return true;
 	}
 	return false;
@@ -146,99 +142,123 @@ static bool gsgpu_sync_add_later(struct gsgpu_sync *sync, struct dma_fence *f, b
  * gsgpu_sync_fence - remember to sync to this fence
  *
  * @sync: sync object to add fence to
- * @fence: fence to sync to
+ * @f: fence to sync to
  *
+ * Add the fence to the sync object.
  */
-int gsgpu_sync_fence(struct gsgpu_device *adev, struct gsgpu_sync *sync,
-		      struct dma_fence *f, bool explicit)
+int gsgpu_sync_fence(struct gsgpu_sync *sync, struct dma_fence *f)
 {
 	struct gsgpu_sync_entry *e;
 
 	if (!f)
 		return 0;
-	if (gsgpu_sync_same_dev(adev, f) &&
-	    gsgpu_sync_get_owner(f) == GSGPU_FENCE_OWNER_VM)
-		gsgpu_sync_keep_later(&sync->last_vm_update, f);
 
-	if (gsgpu_sync_add_later(sync, f, explicit))
+	if (gsgpu_sync_add_later(sync, f))
 		return 0;
 
 	e = kmem_cache_alloc(gsgpu_sync_slab, GFP_KERNEL);
 	if (!e)
 		return -ENOMEM;
 
-	e->explicit = explicit;
-
 	hash_add(sync->fences, &e->node, f->context);
 	e->fence = dma_fence_get(f);
 	return 0;
 }
 
+/* Determine based on the owner and mode if we should sync to a fence or not */
+static bool gsgpu_sync_test_fence(struct gsgpu_device *adev,
+				   enum gsgpu_sync_mode mode,
+				   void *owner, struct dma_fence *f)
+{
+	void *fence_owner = gsgpu_sync_get_owner(f);
+
+	/* Always sync to moves, no matter what */
+	if (fence_owner == GSGPU_FENCE_OWNER_UNDEFINED)
+		return true;
+
+	/* We only want to trigger KFD eviction fences on
+	 * evict or move jobs. Skip KFD fences otherwise.
+	 */
+	if (fence_owner == GSGPU_FENCE_OWNER_KFD &&
+	    owner != GSGPU_FENCE_OWNER_UNDEFINED)
+		return false;
+
+	/* Never sync to VM updates either. */
+	if (fence_owner == GSGPU_FENCE_OWNER_VM &&
+	    owner != GSGPU_FENCE_OWNER_UNDEFINED)
+		return false;
+
+	/* Ignore fences depending on the sync mode */
+	switch (mode) {
+	case GSGPU_SYNC_ALWAYS:
+		return true;
+
+	case GSGPU_SYNC_NE_OWNER:
+		if (gsgpu_sync_same_dev(adev, f) &&
+		    fence_owner == owner)
+			return false;
+		break;
+
+	case GSGPU_SYNC_EQ_OWNER:
+		if (gsgpu_sync_same_dev(adev, f) &&
+		    fence_owner != owner)
+			return false;
+		break;
+
+	case GSGPU_SYNC_EXPLICIT:
+		return false;
+	}
+
+	WARN(debug_evictions && fence_owner == GSGPU_FENCE_OWNER_KFD,
+	     "Adding eviction fence to sync obj");
+	return true;
+}
+
 /**
  * gsgpu_sync_resv - sync to a reservation object
  *
+ * @adev: gsgpu device
  * @sync: sync object to add fences from reservation object to
  * @resv: reservation object with embedded fence
- * @explicit_sync: true if we should only sync to the exclusive fence
+ * @mode: how owner affects which fences we sync to
+ * @owner: owner of the planned job submission
  *
  * Sync to the fence
  */
-int gsgpu_sync_resv(struct gsgpu_device *adev,
-		     struct gsgpu_sync *sync,
-		     struct reservation_object *resv,
-		     void *owner, bool explicit_sync)
+int gsgpu_sync_resv(struct gsgpu_device *adev, struct gsgpu_sync *sync,
+		     struct dma_resv *resv, enum gsgpu_sync_mode mode,
+		     void *owner)
 {
-	struct reservation_object_list *flist;
+	struct dma_resv_iter cursor;
 	struct dma_fence *f;
-	void *fence_owner;
-	unsigned i;
-	int r = 0;
+	int r;
 
 	if (resv == NULL)
 		return -EINVAL;
 
-	/* always sync to the exclusive fence */
-	f = reservation_object_get_excl(resv);
-	r = gsgpu_sync_fence(adev, sync, f, false);
+	/* TODO: Use DMA_RESV_USAGE_READ here */
+	dma_resv_for_each_fence(&cursor, resv, DMA_RESV_USAGE_BOOKKEEP, f) {
+		dma_fence_chain_for_each(f, f) {
+			struct dma_fence *tmp = dma_fence_chain_contained(f);
 
-	flist = reservation_object_get_list(resv);
-	if (!flist || r)
-		return r;
-
-	for (i = 0; i < flist->shared_count; ++i) {
-		f = rcu_dereference_protected(flist->shared[i],
-					      reservation_object_held(resv));
-		/* We only want to trigger KFD eviction fences on
-		 * evict or move jobs. Skip KFD fences otherwise.
-		 */
-		fence_owner = gsgpu_sync_get_owner(f);
-		if (fence_owner == GSGPU_FENCE_OWNER_KFD &&
-		    owner != GSGPU_FENCE_OWNER_UNDEFINED)
-			continue;
-
-		if (gsgpu_sync_same_dev(adev, f)) {
-			/* VM updates are only interesting
-			 * for other VM updates and moves.
-			 */
-			if ((owner != GSGPU_FENCE_OWNER_UNDEFINED) &&
-			    (fence_owner != GSGPU_FENCE_OWNER_UNDEFINED) &&
-			    ((owner == GSGPU_FENCE_OWNER_VM) !=
-			     (fence_owner == GSGPU_FENCE_OWNER_VM)))
-				continue;
-
-			/* Ignore fence from the same owner and explicit one as
-			 * long as it isn't undefined.
-			 */
-			if (owner != GSGPU_FENCE_OWNER_UNDEFINED &&
-			    (fence_owner == owner || explicit_sync))
-				continue;
+			if (gsgpu_sync_test_fence(adev, mode, owner, tmp)) {
+				r = gsgpu_sync_fence(sync, f);
+				dma_fence_put(f);
+				if (r)
+					return r;
+				break;
+			}
 		}
-
-		r = gsgpu_sync_fence(adev, sync, f, false);
-		if (r)
-			break;
 	}
-	return r;
+	return 0;
+}
+
+/* Free the entry back to the slab */
+static void gsgpu_sync_entry_free(struct gsgpu_sync_entry *e)
+{
+	hash_del(&e->node);
+	dma_fence_put(e->fence);
+	kmem_cache_free(gsgpu_sync_slab, e);
 }
 
 /**
@@ -262,9 +282,7 @@ struct dma_fence *gsgpu_sync_peek_fence(struct gsgpu_sync *sync,
 		struct drm_sched_fence *s_fence = to_drm_sched_fence(f);
 
 		if (dma_fence_is_signaled(f)) {
-			hash_del(&e->node);
-			dma_fence_put(f);
-			kmem_cache_free(gsgpu_sync_slab, e);
+			gsgpu_sync_entry_free(e);
 			continue;
 		}
 		if (ring && s_fence) {
@@ -289,21 +307,19 @@ struct dma_fence *gsgpu_sync_peek_fence(struct gsgpu_sync *sync,
  * gsgpu_sync_get_fence - get the next fence from the sync object
  *
  * @sync: sync object to use
- * @explicit: true if the next fence is explicit
  *
  * Get and removes the next fence from the sync object not signaled yet.
  */
-struct dma_fence *gsgpu_sync_get_fence(struct gsgpu_sync *sync, bool *explicit)
+struct dma_fence *gsgpu_sync_get_fence(struct gsgpu_sync *sync)
 {
 	struct gsgpu_sync_entry *e;
 	struct hlist_node *tmp;
 	struct dma_fence *f;
 	int i;
+
 	hash_for_each_safe(sync->fences, i, tmp, e, node) {
 
 		f = e->fence;
-		if (explicit)
-			*explicit = e->explicit;
 
 		hash_del(&e->node);
 		kmem_cache_free(gsgpu_sync_slab, e);
@@ -335,19 +351,45 @@ int gsgpu_sync_clone(struct gsgpu_sync *source, struct gsgpu_sync *clone)
 	hash_for_each_safe(source->fences, i, tmp, e, node) {
 		f = e->fence;
 		if (!dma_fence_is_signaled(f)) {
-			r = gsgpu_sync_fence(NULL, clone, f, e->explicit);
+			r = gsgpu_sync_fence(clone, f);
 			if (r)
 				return r;
 		} else {
-			hash_del(&e->node);
-			dma_fence_put(f);
-			kmem_cache_free(gsgpu_sync_slab, e);
+			gsgpu_sync_entry_free(e);
 		}
 	}
 
-	dma_fence_put(clone->last_vm_update);
-	clone->last_vm_update = dma_fence_get(source->last_vm_update);
+	return 0;
+}
 
+/**
+ * gsgpu_sync_push_to_job - push fences into job
+ * @sync: sync object to get the fences from
+ * @job: job to push the fences into
+ *
+ * Add all unsignaled fences from sync to job.
+ */
+int gsgpu_sync_push_to_job(struct gsgpu_sync *sync, struct gsgpu_job *job)
+{
+	struct gsgpu_sync_entry *e;
+	struct hlist_node *tmp;
+	struct dma_fence *f;
+	int i, r;
+
+	hash_for_each_safe(sync->fences, i, tmp, e, node) {
+		f = e->fence;
+		if (dma_fence_is_signaled(f)) {
+			gsgpu_sync_entry_free(e);
+			continue;
+		}
+
+		dma_fence_get(f);
+		r = drm_sched_job_add_dependency(&job->base, f);
+		if (r) {
+			dma_fence_put(f);
+			return r;
+		}
+	}
 	return 0;
 }
 
@@ -362,9 +404,7 @@ int gsgpu_sync_wait(struct gsgpu_sync *sync, bool intr)
 		if (r)
 			return r;
 
-		hash_del(&e->node);
-		dma_fence_put(e->fence);
-		kmem_cache_free(gsgpu_sync_slab, e);
+		gsgpu_sync_entry_free(e);
 	}
 
 	return 0;
@@ -381,15 +421,10 @@ void gsgpu_sync_free(struct gsgpu_sync *sync)
 {
 	struct gsgpu_sync_entry *e;
 	struct hlist_node *tmp;
-	unsigned i;
+	unsigned int i;
 
-	hash_for_each_safe(sync->fences, i, tmp, e, node) {
-		hash_del(&e->node);
-		dma_fence_put(e->fence);
-		kmem_cache_free(gsgpu_sync_slab, e);
-	}
-
-	dma_fence_put(sync->last_vm_update);
+	hash_for_each_safe(sync->fences, i, tmp, e, node)
+		gsgpu_sync_entry_free(e);
 }
 
 /**

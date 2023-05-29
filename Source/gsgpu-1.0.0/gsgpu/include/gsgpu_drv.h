@@ -45,4 +45,7 @@
 long gsgpu_drm_ioctl(struct file *filp,
 		      unsigned int cmd, unsigned long arg);
 
+long gsgpu_kms_compat_ioctl(struct file *filp,
+			     unsigned int cmd, unsigned long arg);
+
 #endif

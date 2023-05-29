@@ -23,51 +23,70 @@
  */
 
 #include <linux/fdtable.h>
+#include <linux/file.h>
 #include <linux/pid.h>
+
 #include <drm/gsgpu_drm.h>
+
 #include "gsgpu.h"
-
+#include "gsgpu_sched.h"
 #include "gsgpu_vm.h"
-
-enum drm_sched_priority gsgpu_to_sched_priority(int gsgpu_priority)
-{
-	switch (gsgpu_priority) {
-	case GSGPU_CTX_PRIORITY_VERY_HIGH:
-		return DRM_SCHED_PRIORITY_HIGH_HW;
-	case GSGPU_CTX_PRIORITY_HIGH:
-		return DRM_SCHED_PRIORITY_HIGH_SW;
-	case GSGPU_CTX_PRIORITY_NORMAL:
-		return DRM_SCHED_PRIORITY_NORMAL;
-	case GSGPU_CTX_PRIORITY_LOW:
-	case GSGPU_CTX_PRIORITY_VERY_LOW:
-		return DRM_SCHED_PRIORITY_LOW;
-	case GSGPU_CTX_PRIORITY_UNSET:
-		return DRM_SCHED_PRIORITY_UNSET;
-	default:
-		WARN(1, "Invalid context priority %d\n", gsgpu_priority);
-		return DRM_SCHED_PRIORITY_INVALID;
-	}
-}
 
 static int gsgpu_sched_process_priority_override(struct gsgpu_device *adev,
 						  int fd,
-						  enum drm_sched_priority priority)
+						  int32_t priority)
 {
-	struct file *filp = fget(fd);
-	struct drm_file *file;
+	struct fd f = fdget(fd);
 	struct gsgpu_fpriv *fpriv;
 	struct gsgpu_ctx *ctx;
 	uint32_t id;
+	int r;
 
-	if (!filp)
+	if (!f.file)
 		return -EINVAL;
 
-	file = filp->private_data;
-	fpriv = file->driver_priv;
+	r = gsgpu_file_to_fpriv(f.file, &fpriv);
+	if (r) {
+		fdput(f);
+		return r;
+	}
+
 	idr_for_each_entry(&fpriv->ctx_mgr.ctx_handles, ctx, id)
 		gsgpu_ctx_priority_override(ctx, priority);
 
-	fput(filp);
+	fdput(f);
+	return 0;
+}
+
+static int gsgpu_sched_context_priority_override(struct gsgpu_device *adev,
+						  int fd,
+						  unsigned ctx_id,
+						  int32_t priority)
+{
+	struct fd f = fdget(fd);
+	struct gsgpu_fpriv *fpriv;
+	struct gsgpu_ctx *ctx;
+	int r;
+
+	if (!f.file)
+		return -EINVAL;
+
+	r = gsgpu_file_to_fpriv(f.file, &fpriv);
+	if (r) {
+		fdput(f);
+		return r;
+	}
+
+	ctx = gsgpu_ctx_get(fpriv, ctx_id);
+
+	if (!ctx) {
+		fdput(f);
+		return -EINVAL;
+	}
+
+	gsgpu_ctx_priority_override(ctx, priority);
+	gsgpu_ctx_put(ctx);
+	fdput(f);
 
 	return 0;
 }
@@ -76,22 +95,40 @@ int gsgpu_sched_ioctl(struct drm_device *dev, void *data,
 		       struct drm_file *filp)
 {
 	union drm_gsgpu_sched *args = data;
-	struct gsgpu_device *adev = dev->dev_private;
-	enum drm_sched_priority priority;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	int r;
 
-	priority = gsgpu_to_sched_priority(args->in.priority);
-	if (args->in.flags || priority == DRM_SCHED_PRIORITY_INVALID)
+	/* First check the op, then the op's argument.
+	 */
+	switch (args->in.op) {
+	case GSGPU_SCHED_OP_PROCESS_PRIORITY_OVERRIDE:
+	case GSGPU_SCHED_OP_CONTEXT_PRIORITY_OVERRIDE:
+		break;
+	default:
+		DRM_ERROR("Invalid sched op specified: %d\n", args->in.op);
 		return -EINVAL;
+	}
+
+	if (!gsgpu_ctx_priority_is_valid(args->in.priority)) {
+		WARN(1, "Invalid context priority %d\n", args->in.priority);
+		return -EINVAL;
+	}
 
 	switch (args->in.op) {
 	case GSGPU_SCHED_OP_PROCESS_PRIORITY_OVERRIDE:
 		r = gsgpu_sched_process_priority_override(adev,
 							   args->in.fd,
-							   priority);
+							   args->in.priority);
+		break;
+	case GSGPU_SCHED_OP_CONTEXT_PRIORITY_OVERRIDE:
+		r = gsgpu_sched_context_priority_override(adev,
+							   args->in.fd,
+							   args->in.ctx_id,
+							   args->in.priority);
 		break;
 	default:
-		DRM_ERROR("Invalid sched op specified: %d\n", args->in.op);
+		/* Impossible.
+		 */
 		r = -EINVAL;
 		break;
 	}

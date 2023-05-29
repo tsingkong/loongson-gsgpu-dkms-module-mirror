@@ -28,7 +28,8 @@
  *    Christian König <deathsimple@vodafone.de>
  */
 
-#include <drm/drmP.h>
+#include <linux/uaccess.h>
+
 #include "gsgpu.h"
 #include "gsgpu_trace.h"
 
@@ -39,7 +40,7 @@ static void gsgpu_bo_list_free_rcu(struct rcu_head *rcu)
 {
 	struct gsgpu_bo_list *list = container_of(rcu, struct gsgpu_bo_list,
 						   rhead);
-
+	mutex_destroy(&list->bo_list_mutex);
 	kvfree(list);
 }
 
@@ -49,15 +50,18 @@ static void gsgpu_bo_list_free(struct kref *ref)
 						   refcount);
 	struct gsgpu_bo_list_entry *e;
 
-	gsgpu_bo_list_for_each_entry(e, list)
-		gsgpu_bo_unref(&e->robj);
+	gsgpu_bo_list_for_each_entry(e, list) {
+		struct gsgpu_bo *bo = ttm_to_gsgpu_bo(e->tv.bo);
+
+		gsgpu_bo_unref(&bo);
+	}
 
 	call_rcu(&list->rhead, gsgpu_bo_list_free_rcu);
 }
 
 int gsgpu_bo_list_create(struct gsgpu_device *adev, struct drm_file *filp,
 			  struct drm_gsgpu_bo_list_entry *info,
-			  unsigned num_entries, struct gsgpu_bo_list **result)
+			  size_t num_entries, struct gsgpu_bo_list **result)
 {
 	unsigned last_entry = 0, first_userptr = num_entries;
 	struct gsgpu_bo_list_entry *array;
@@ -95,7 +99,7 @@ int gsgpu_bo_list_create(struct gsgpu_device *adev, struct drm_file *filp,
 		}
 
 		bo = gsgpu_bo_ref(gem_to_gsgpu_bo(gobj));
-		drm_gem_object_put_unlocked(gobj);
+		drm_gem_object_put(gobj);
 
 		usermm = gsgpu_ttm_tt_get_usermm(bo->tbo.ttm);
 		if (usermm) {
@@ -109,14 +113,12 @@ int gsgpu_bo_list_create(struct gsgpu_device *adev, struct drm_file *filp,
 			entry = &array[last_entry++];
 		}
 
-		entry->robj = bo;
 		entry->priority = min(info[i].bo_priority,
 				      GSGPU_BO_LIST_MAX_PRIORITY);
-		entry->tv.bo = &entry->robj->tbo;
-		entry->tv.shared = !entry->robj->prime_shared_count;
+		entry->tv.bo = &bo->tbo;
 
-		total_size += gsgpu_bo_size(entry->robj);
-		trace_gsgpu_bo_list_set(list, entry->robj);
+		total_size += gsgpu_bo_size(bo);
+		trace_gsgpu_bo_list_set(list, bo);
 	}
 
 	list->first_userptr = first_userptr;
@@ -124,12 +126,21 @@ int gsgpu_bo_list_create(struct gsgpu_device *adev, struct drm_file *filp,
 
 	trace_gsgpu_cs_bo_status(list->num_entries, total_size);
 
+	mutex_init(&list->bo_list_mutex);
 	*result = list;
 	return 0;
 
 error_free:
-	while (i--)
-		gsgpu_bo_unref(&array[i].robj);
+	for (i = 0; i < last_entry; ++i) {
+		struct gsgpu_bo *bo = ttm_to_gsgpu_bo(array[i].tv.bo);
+
+		gsgpu_bo_unref(&bo);
+	}
+	for (i = first_userptr; i < num_entries; ++i) {
+		struct gsgpu_bo *bo = ttm_to_gsgpu_bo(array[i].tv.bo);
+
+		gsgpu_bo_unref(&bo);
+	}
 	kvfree(list);
 	return r;
 
@@ -181,12 +192,14 @@ void gsgpu_bo_list_get_list(struct gsgpu_bo_list *list,
 	 * with the same priority, i.e. it must be stable.
 	 */
 	gsgpu_bo_list_for_each_entry(e, list) {
+		struct gsgpu_bo *bo = ttm_to_gsgpu_bo(e->tv.bo);
 		unsigned priority = e->priority;
 
-		if (!e->robj->parent)
+		if (!bo->parent)
 			list_add_tail(&e->tv.head, &bucket[priority]);
 
 		e->user_pages = NULL;
+		e->range = NULL;
 	}
 
 	/* Connect the sorted buckets in the output list. */
@@ -244,7 +257,7 @@ error_free:
 int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *filp)
 {
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	struct gsgpu_fpriv *fpriv = filp->driver_priv;
 	union drm_gsgpu_bo_list *args = data;
 	uint32_t handle = args->in.list_handle;
@@ -254,7 +267,7 @@ int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 
 	r = gsgpu_bo_create_list_entry_array(&args->in, &info);
 	if (r)
-		goto error_free;
+		return r;
 
 	switch (args->in.operation) {
 	case GSGPU_BO_LIST_OP_CREATE:
@@ -267,8 +280,7 @@ int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 		r = idr_alloc(&fpriv->bo_list_handles, list, 1, 0, GFP_KERNEL);
 		mutex_unlock(&fpriv->bo_list_lock);
 		if (r < 0) {
-			gsgpu_bo_list_put(list);
-			return r;
+			goto error_put_list;
 		}
 
 		handle = r;
@@ -290,9 +302,8 @@ int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 		mutex_unlock(&fpriv->bo_list_lock);
 
 		if (IS_ERR(old)) {
-			gsgpu_bo_list_put(list);
 			r = PTR_ERR(old);
-			goto error_free;
+			goto error_put_list;
 		}
 
 		gsgpu_bo_list_put(old);
@@ -309,8 +320,10 @@ int gsgpu_bo_list_ioctl(struct drm_device *dev, void *data,
 
 	return 0;
 
+error_put_list:
+	gsgpu_bo_list_put(list);
+
 error_free:
-	if (info)
-		kvfree(info);
+	kvfree(info);
 	return r;
 }

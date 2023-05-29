@@ -280,7 +280,7 @@ static int gsgpu_dc_i2c_init(struct gsgpu_device *adev, uint32_t link_index)
 	i2c->adapter.owner = THIS_MODULE;
 	i2c->adapter.class = I2C_CLASS_DDC;
 	i2c->adapter.algo = &gsgpu_dc_i2c_algo;
-	i2c->adapter.dev.parent = adev->ddev->dev;
+	i2c->adapter.dev.parent = adev_to_drm(adev)->dev;
 	i2c->adapter.nr = -1;
 	i2c->adapter.retries = 5;
 	i2c->adapter.timeout = msecs_to_jiffies(100);
@@ -312,7 +312,7 @@ static int gsgpu_dc_i2c_init(struct gsgpu_device *adev, uint32_t link_index)
 		goto out_free;
 	}
 
-	ddc_client = i2c_new_device(&i2c->adapter, &ddc_info);
+	ddc_client = i2c_new_client_device(&i2c->adapter, &ddc_info);
 	if (IS_ERR(ddc_client)) {
 		ret = PTR_ERR(ddc_client);
 		DRM_ERROR("Failed to create standard ddc client\n");
@@ -357,7 +357,7 @@ static int gsgpu_dc_gpio_init(struct gsgpu_device *adev, uint32_t link_index)
 	i2c->adapter.owner = THIS_MODULE;
 	i2c->adapter.class = I2C_CLASS_DDC;
 	i2c->adapter.algo_data = i2c_algo_data;
-	i2c->adapter.dev.parent = adev->ddev->dev;
+	i2c->adapter.dev.parent = adev_to_drm(adev)->dev;
 	i2c->adapter.nr = -1;
 	snprintf(i2c->adapter.name, sizeof(i2c->adapter.name),
 		 "DC-GPIO-I2C:%d", link_index);
@@ -383,7 +383,7 @@ static int gsgpu_dc_gpio_init(struct gsgpu_device *adev, uint32_t link_index)
 	i2c_algo_data->data = i2c;
 	i2c_set_adapdata(&i2c->adapter, i2c);
 
-	ddc_client = i2c_new_device(&i2c->adapter, &ddc_info);
+	ddc_client = i2c_new_client_device(&i2c->adapter, &ddc_info);
 	if (IS_ERR(ddc_client)) {
 		ret = PTR_ERR(ddc_client);
 		DRM_ERROR("Failed to create standard ddc client\n");

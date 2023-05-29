@@ -25,25 +25,43 @@
 #define __GSGPU_IRQ_H__
 
 #include <linux/irqdomain.h>
-#include "gsgpu_ih.h"
 #include "gsgpu_dc_i2c.h"
+#include "gsgpu_ih.h"
 
-#define GSGPU_MAX_IRQ_SRC_ID	0x100
+#define GSGPU_MAX_IRQ_SRC_ID		0x100
 #define GSGPU_MAX_IRQ_CLIENT_ID	0x100
 
+#define GSGPU_IRQ_CLIENTID_LEGACY	0
+#define GSGPU_IRQ_CLIENTID_MAX		SOC15_IH_CLIENTID_MAX
+
+#define GSGPU_IRQ_SRC_DATA_MAX_SIZE_DW	4
+
 struct gsgpu_device;
-struct gsgpu_iv_entry;
 
 enum gsgpu_interrupt_state {
 	GSGPU_IRQ_STATE_DISABLE,
 	GSGPU_IRQ_STATE_ENABLE,
 };
 
+struct gsgpu_iv_entry {
+	struct gsgpu_ih_ring *ih;
+	unsigned client_id;
+	unsigned src_id;
+	unsigned ring_id;
+	unsigned vmid;
+	unsigned vmid_src;
+	uint64_t timestamp;
+	unsigned timestamp_src;
+	unsigned pasid;
+	unsigned pasid_src;
+	unsigned src_data[GSGPU_IRQ_SRC_DATA_MAX_SIZE_DW];
+	const uint32_t *iv_entry;
+};
+
 struct gsgpu_irq_src {
 	unsigned				num_types;
 	atomic_t				*enabled_types;
 	const struct gsgpu_irq_src_funcs	*funcs;
-	void *data;
 };
 
 struct gsgpu_irq_client {
@@ -62,28 +80,34 @@ struct gsgpu_irq_src_funcs {
 
 struct gsgpu_irq {
 	bool				installed;
+	unsigned int			irq;
 	spinlock_t			lock;
 	/* interrupt sources */
-	struct gsgpu_irq_client	client[GSGPU_IH_CLIENTID_MAX];
+	struct gsgpu_irq_client	client[GSGPU_IRQ_CLIENTID_MAX];
 
 	/* status, etc. */
 	bool				msi_enabled; /* msi enabled */
 
-	/* interrupt ring */
-	struct gsgpu_ih_ring		ih;
-	const struct gsgpu_ih_funcs	*ih_funcs;
+	/* interrupt rings */
+	struct gsgpu_ih_ring		ih, ih1, ih2, ih_soft;
+	const struct gsgpu_ih_funcs    *ih_funcs;
+	struct work_struct		ih1_work, ih2_work, ih_soft_work;
+	struct gsgpu_irq_src		self_irq;
 };
 
 void gsgpu_irq_disable_all(struct gsgpu_device *adev);
-irqreturn_t gsgpu_irq_handler(int irq, void *arg);
 
 int gsgpu_irq_init(struct gsgpu_device *adev);
-void gsgpu_irq_fini(struct gsgpu_device *adev);
+void gsgpu_irq_fini_sw(struct gsgpu_device *adev);
+void gsgpu_irq_fini_hw(struct gsgpu_device *adev);
 int gsgpu_irq_add_id(struct gsgpu_device *adev,
 		      unsigned client_id, unsigned src_id,
 		      struct gsgpu_irq_src *source);
 void gsgpu_irq_dispatch(struct gsgpu_device *adev,
-			 struct gsgpu_iv_entry *entry);
+			 struct gsgpu_ih_ring *ih);
+void gsgpu_irq_delegate(struct gsgpu_device *adev,
+			 struct gsgpu_iv_entry *entry,
+			 unsigned int num_dw);
 int gsgpu_irq_update(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 		      unsigned type);
 int gsgpu_irq_get(struct gsgpu_device *adev, struct gsgpu_irq_src *src,

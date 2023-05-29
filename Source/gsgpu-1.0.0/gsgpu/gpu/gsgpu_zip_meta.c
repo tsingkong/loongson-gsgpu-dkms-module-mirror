@@ -1,4 +1,4 @@
-#include <drm/drmP.h>
+#include <drm/drm.h>
 #include <drm/gsgpu_drm.h>
 #include "gsgpu.h"
 

@@ -20,9 +20,14 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  *
  */
+
+#include <linux/delay.h>
 #include <linux/kernel.h>
-#include <drm/drmP.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+
 #include "gsgpu.h"
+#include "gsgpu_gfx.h"
 #include "gsgpu_common.h"
 #include "gsgpu_cp.h"
 
@@ -31,6 +36,11 @@
 #define GFX8_NUM_GFX_RINGS     1
 
 MODULE_FIRMWARE("loongson/lg100_cp.bin");
+
+/* delay 0.1 second to enable gfx off feature */
+#define GFX_OFF_DELAY_ENABLE         msecs_to_jiffies(100)
+
+#define GFX_OFF_NO_DELAY 0
 
 static void gfx_set_ring_funcs(struct gsgpu_device *adev);
 static void gfx_set_irq_funcs(struct gsgpu_device *adev);
@@ -71,7 +81,7 @@ static int gfx_ring_test_ring(struct gsgpu_ring *ring)
 		tmp = le32_to_cpu(adev->wb.wb[index]);
 		if (tmp == 0xDEADBEEF)
 			break;
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 
 	if (i < adev->usec_timeout) {
@@ -99,19 +109,17 @@ static int gfx_ring_test_ib(struct gsgpu_ring *ring, long timeout)
 	long r;
 
 	r = gsgpu_device_wb_get(adev, &index);
-	if (r) {
-		dev_err(adev->dev, "(%ld) failed to allocate wb slot\n", r);
+	if (r)
 		return r;
-	}
 
 	gpu_addr = adev->wb.gpu_addr + (index * 4);
 	adev->wb.wb[index] = cpu_to_le32(0xCAFEDEAD);
 	memset(&ib, 0, sizeof(ib));
-	r = gsgpu_ib_get(adev, NULL, 16, &ib);
-	if (r) {
-		DRM_ERROR("gsgpu: failed to get ib (%ld).\n", r);
+	r = gsgpu_ib_get(adev, NULL, 16,
+					GSGPU_IB_POOL_DIRECT, &ib);
+	if (r)
 		goto err1;
-	}
+
 	ib.ptr[0] = GSPKT(GSPKT_WRITE, 3) | WRITE_DST_SEL(1) | WRITE_WAIT;
 	ib.ptr[1] = lower_32_bits(gpu_addr);
 	ib.ptr[2] = upper_32_bits(gpu_addr);
@@ -124,22 +132,17 @@ static int gfx_ring_test_ib(struct gsgpu_ring *ring, long timeout)
 
 	r = dma_fence_wait_timeout(f, false, timeout);
 	if (r == 0) {
-		DRM_ERROR("gsgpu: IB test timed out.\n");
 		r = -ETIMEDOUT;
 		goto err2;
 	} else if (r < 0) {
-		DRM_ERROR("gsgpu: fence wait failed (%ld).\n", r);
 		goto err2;
 	}
 
 	tmp = adev->wb.wb[index];
-	if (tmp == 0xDEADBEEF) {
-		DRM_DEBUG("ib test on ring %d succeeded\n", ring->idx);
+	if (tmp == 0xDEADBEEF)
 		r = 0;
-	} else {
-		DRM_ERROR("ib test on ring %d failed\n", ring->idx);
+	else
 		r = -EINVAL;
-	}
 
 err2:
 	gsgpu_ib_free(adev, &ib, NULL);
@@ -205,37 +208,37 @@ static int gfx_sw_init(void *handle)
 {
 	int i, r;
 	struct gsgpu_ring *ring;
+	// struct gsgpu_kiq *kiq;
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
 	/* EOP Event */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
 	if (r)
 		return r;
 
 	/* Privileged reg */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_REG_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_REG_FAULT,
 			      &adev->gfx.priv_reg_irq);
 	if (r)
 		return r;
 
 	/* Privileged inst */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_INSTR_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_INSTR_FAULT,
 			      &adev->gfx.priv_inst_irq);
 	if (r)
 		return r;
 
 	adev->gfx.gfx_current_status = GSGPU_GFX_NORMAL_MODE;
 
-	//gfx_scratch_init(adev);
-
 	/* set up the gfx ring */
 	for (i = 0; i < adev->gfx.num_gfx_rings; i++) {
 		ring = &adev->gfx.gfx_ring[i];
 		ring->ring_obj = NULL;
 		sprintf(ring->name, "gfx");
-
+		
 		r = gsgpu_ring_init(adev, ring, 256, &adev->gfx.eop_irq,
-				     GSGPU_CP_IRQ_GFX_EOP);
+				     GSGPU_CP_IRQ_GFX_ME0_PIPE0_EOP,
+				     GSGPU_RING_PRIO_DEFAULT, NULL);
 		if (r)
 			return r;
 	}
@@ -251,8 +254,8 @@ static int gfx_sw_init(void *handle)
 
 static int gfx_sw_fini(void *handle)
 {
-	int i;
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
+	int i;
 
 	for (i = 0; i < adev->gfx.num_gfx_rings; i++)
 		gsgpu_ring_fini(&adev->gfx.gfx_ring[i]);
@@ -260,61 +263,61 @@ static int gfx_sw_fini(void *handle)
 	return 0;
 }
 
-static void gfx_parse_ind_reg_list(int *register_list_format,
-				int ind_offset,
-				int list_size,
-				int *unique_indices,
-				int *indices_count,
-				int max_indices,
-				int *ind_start_offsets,
-				int *offset_count,
-				int max_offset)
-{
-	int indices;
-	bool new_entry = true;
+// static void gfx_parse_ind_reg_list(int *register_list_format,
+// 				int ind_offset,
+// 				int list_size,
+// 				int *unique_indices,
+// 				int *indices_count,
+// 				int max_indices,
+// 				int *ind_start_offsets,
+// 				int *offset_count,
+// 				int max_offset)
+// {
+// 	int indices;
+// 	bool new_entry = true;
 
-	for (; ind_offset < list_size; ind_offset++) {
+// 	for (; ind_offset < list_size; ind_offset++) {
 
-		if (new_entry) {
-			new_entry = false;
-			ind_start_offsets[*offset_count] = ind_offset;
-			*offset_count = *offset_count + 1;
-			BUG_ON(*offset_count >= max_offset);
-		}
+// 		if (new_entry) {
+// 			new_entry = false;
+// 			ind_start_offsets[*offset_count] = ind_offset;
+// 			*offset_count = *offset_count + 1;
+// 			BUG_ON(*offset_count >= max_offset);
+// 		}
 
-		if (register_list_format[ind_offset] == 0xFFFFFFFF) {
-			new_entry = true;
-			continue;
-		}
+// 		if (register_list_format[ind_offset] == 0xFFFFFFFF) {
+// 			new_entry = true;
+// 			continue;
+// 		}
 
-		ind_offset += 2;
+// 		ind_offset += 2;
 
-		/* look for the matching indice */
-		for (indices = 0;
-			indices < *indices_count;
-			indices++) {
-			if (unique_indices[indices] ==
-				register_list_format[ind_offset])
-				break;
-		}
+// 		/* look for the matching indice */
+// 		for (indices = 0;
+// 			indices < *indices_count;
+// 			indices++) {
+// 			if (unique_indices[indices] ==
+// 				register_list_format[ind_offset])
+// 				break;
+// 		}
 
-		if (indices >= *indices_count) {
-			unique_indices[*indices_count] =
-				register_list_format[ind_offset];
-			indices = *indices_count;
-			*indices_count = *indices_count + 1;
-			BUG_ON(*indices_count >= max_indices);
-		}
+// 		if (indices >= *indices_count) {
+// 			unique_indices[*indices_count] =
+// 				register_list_format[ind_offset];
+// 			indices = *indices_count;
+// 			*indices_count = *indices_count + 1;
+// 			BUG_ON(*indices_count >= max_indices);
+// 		}
 
-		register_list_format[ind_offset] = indices;
-	}
-}
+// 		register_list_format[ind_offset] = indices;
+// 	}
+// }
 
 static int gfx_cp_gfx_resume(struct gsgpu_device *adev)
 {
 	struct gsgpu_ring *ring;
 	u64 cb_addr;//, rptr_addr, wptr_gpu_addr;
-	int r = 0;
+	// int r = 0;
 
 	/*Flush pipeline*/
 	gsgpu_cmd_exec(adev, GSCMD(GSCMD_PIPE, GSCMD_PIPE_FLUSH), 1, ~1);
@@ -323,7 +326,7 @@ static int gfx_cp_gfx_resume(struct gsgpu_device *adev)
 
 	/* Set ring buffer size */
 	ring = &adev->gfx.gfx_ring[0];
-
+	
 	/* Initialize the ring buffer's read and write pointers */
 	ring->wptr = 0;
 	WREG32(GSGPU_GFX_CB_WPTR_OFFSET, lower_32_bits(ring->wptr));
@@ -332,17 +335,16 @@ static int gfx_cp_gfx_resume(struct gsgpu_device *adev)
 	WREG32(GSGPU_GFX_CB_RPTR_OFFSET, 0);
 
 	mdelay(1);
-
+	
 	cb_addr = ring->gpu_addr;
 	WREG32(GSGPU_GFX_CB_BASE_LO_OFFSET, cb_addr);
 	WREG32(GSGPU_GFX_CB_BASE_HI_OFFSET, upper_32_bits(cb_addr));
 
 	/* start the ring */
 	gsgpu_ring_clear_ring(ring);
+	ring->sched.ready = true;
 
-	ring->ready = true;
-
-	return r;
+	return 0;
 }
 
 static int gfx_cp_resume(struct gsgpu_device *adev)
@@ -366,33 +368,6 @@ static int gfx_hw_init(void *handle)
 	return r;
 }
 
-static int gfx_hw_fini(void *handle)
-{
-	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
-
-	gsgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
-	gsgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
-
-	return 0;
-}
-
-static int gfx_suspend(void *handle)
-{
-	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
-	adev->gfx.in_suspend = true;
-	return gfx_hw_fini(adev);
-}
-
-static int gfx_resume(void *handle)
-{
-	int r;
-	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
-
-	r = gfx_hw_init(adev);
-	adev->gfx.in_suspend = false;
-	return r;
-}
-
 static bool gfx_is_idle(void *handle)
 {
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
@@ -405,9 +380,29 @@ static int gfx_wait_for_idle(void *handle)
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
 	if(gsgpu_cp_wait_done(adev) == true)
-			return 0;
+		return 0;
 
 	return -ETIMEDOUT;
+}
+
+static int gfx_hw_fini(void *handle)
+{
+	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
+
+	gsgpu_irq_put(adev, &adev->gfx.priv_reg_irq, 0);
+	gsgpu_irq_put(adev, &adev->gfx.priv_inst_irq, 0);
+
+	return 0;
+}
+
+static int gfx_suspend(void *handle)
+{
+	return gfx_hw_fini(handle);
+}
+
+static int gfx_resume(void *handle)
+{
+	return gfx_hw_init(handle);
 }
 
 /**
@@ -422,20 +417,18 @@ static uint64_t gfx_get_gpu_clock_counter(struct gsgpu_device *adev)
 {
 	uint64_t clock = 0;
 
-	//TODO
 	mutex_lock(&adev->gfx.gpu_clock_mutex);
-
 	DRM_DEBUG("%s Not impelet\n", __func__);
-
 	mutex_unlock(&adev->gfx.gpu_clock_mutex);
 	return clock;
 }
 
 static const struct gsgpu_gfx_funcs gfx_gfx_funcs = {
 	.get_gpu_clock_counter = &gfx_get_gpu_clock_counter,
+	.select_se_sh = NULL,//&gfx_select_se_sh,
 	.read_wave_data = NULL,//&gfx_read_wave_data,
 	.read_wave_sgprs = NULL,//&gfx_read_wave_sgprs,
-	.select_me_pipe_q = NULL//&gfx_select_me_pipe_q
+	.select_me_pipe_q = NULL,//&gfx_select_me_pipe_q
 };
 
 static int gfx_early_init(void *handle)
@@ -468,7 +461,7 @@ static int gfx_late_init(void *handle)
 
 static u64 gfx_ring_get_rptr(struct gsgpu_ring *ring)
 {
-	return ring->adev->wb.wb[ring->rptr_offs];
+	return *ring->rptr_cpu_addr;
 }
 
 static u64 gfx_ring_get_wptr_gfx(struct gsgpu_ring *ring)
@@ -486,9 +479,11 @@ static void gfx_ring_set_wptr_gfx(struct gsgpu_ring *ring)
 }
 
 static void gfx_ring_emit_ib_gfx(struct gsgpu_ring *ring,
-				      struct gsgpu_ib *ib,
-				      unsigned vmid, bool ctx_switch)
+					struct gsgpu_job *job,
+					struct gsgpu_ib *ib,
+					uint32_t flags)
 {
+	unsigned vmid = GSGPU_JOB_GET_VMID(job);
 	u32 header, control = 0;
 
 	header = GSPKT(GSPKT_INDIRECT, 3);
@@ -516,7 +511,6 @@ static void gfx_ring_emit_fence_gfx(struct gsgpu_ring *ring, u64 addr,
 	gsgpu_ring_write(ring, lower_32_bits(seq));
 	if(write64bit)
 		gsgpu_ring_write(ring, upper_32_bits(seq));
-
 }
 
 static void gfx_ring_emit_pipeline_sync(struct gsgpu_ring *ring)
@@ -540,17 +534,18 @@ static void gfx_ring_emit_vm_flush(struct gsgpu_ring *ring,
 	gsgpu_gmc_emit_flush_gpu_tlb(ring, vmid, pd_addr);
 }
 
-static void gfx_ring_emit_rreg(struct gsgpu_ring *ring, uint32_t reg)
-{
-	struct gsgpu_device *adev = ring->adev;
+// static void gfx_ring_emit_rreg(struct gsgpu_ring *ring, uint32_t reg,
+// 				    uint32_t reg_val_offs)
+// {
+// 	struct gsgpu_device *adev = ring->adev;
 
-	gsgpu_ring_write(ring, GSPKT(GSPKT_READ, 3) | READ_SRC_SEL(0) | WRITE_DST_SEL(1) | WRITE_WAIT);
-	gsgpu_ring_write(ring, reg);
-	gsgpu_ring_write(ring, lower_32_bits(adev->wb.gpu_addr +
-				adev->reg_val_offs * 4));
-	gsgpu_ring_write(ring, upper_32_bits(adev->wb.gpu_addr +
-				adev->reg_val_offs * 4));
-}
+// 	gsgpu_ring_write(ring, GSPKT(GSPKT_READ, 3) | READ_SRC_SEL(0) | WRITE_DST_SEL(1) | WRITE_WAIT);
+// 	gsgpu_ring_write(ring, reg);
+// 	gsgpu_ring_write(ring, lower_32_bits(adev->wb.gpu_addr +
+// 				reg_val_offs * 4));
+// 	gsgpu_ring_write(ring, upper_32_bits(adev->wb.gpu_addr +
+// 				reg_val_offs * 4));
+// }
 
 static void gfx_ring_emit_wreg(struct gsgpu_ring *ring, uint32_t reg,
 				  uint32_t val)
@@ -570,7 +565,6 @@ static int gfx_set_priv_reg_fault_state(struct gsgpu_device *adev,
 					     unsigned type,
 					     enum gsgpu_interrupt_state state)
 {
-
 	return 0;
 }
 
@@ -579,7 +573,6 @@ static int gfx_set_priv_inst_fault_state(struct gsgpu_device *adev,
 					      unsigned type,
 					      enum gsgpu_interrupt_state state)
 {
-
 	return 0;
 }
 
@@ -589,7 +582,6 @@ static int gfx_set_eop_interrupt_state(struct gsgpu_device *adev,
 					    enum gsgpu_interrupt_state state)
 {
 	gfx_set_gfx_eop_interrupt_state(adev, state);
-
 	return 0;
 }
 
@@ -615,12 +607,33 @@ static int gfx_eop_irq(struct gsgpu_device *adev,
 	return 0;
 }
 
+static void gfx_fault(struct gsgpu_device *adev,
+			   struct gsgpu_iv_entry *entry)
+{
+	u8 me_id, pipe_id, queue_id;
+	// struct gsgpu_ring *ring;
+	// int i;
+
+	me_id = (entry->ring_id & 0x0c) >> 2;
+	pipe_id = (entry->ring_id & 0x03) >> 0;
+	queue_id = (entry->ring_id & 0x70) >> 4;
+
+	switch (me_id) {
+	case 0:
+		drm_sched_fault(&adev->gfx.gfx_ring[0].sched);
+		break;
+	case 1:
+	case 2:
+		break;
+	}
+}
+
 static int gfx_priv_reg_irq(struct gsgpu_device *adev,
 				 struct gsgpu_irq_src *source,
 				 struct gsgpu_iv_entry *entry)
 {
 	DRM_ERROR("Illegal register access in command stream\n");
-	schedule_work(&adev->reset_work);
+	gfx_fault(adev, entry);
 	return 0;
 }
 
@@ -629,7 +642,7 @@ static int gfx_priv_inst_irq(struct gsgpu_device *adev,
 				  struct gsgpu_iv_entry *entry)
 {
 	DRM_ERROR("Illegal instruction in command stream\n");
-	schedule_work(&adev->reset_work);
+	gfx_fault(adev, entry);
 	return 0;
 }
 
@@ -717,3 +730,60 @@ const struct gsgpu_ip_block_version gfx_ip_block =
 	.rev = 0,
 	.funcs = &gfx_ip_funcs,
 };
+
+
+/* gsgpu_gfx_off_ctrl - Handle gfx off feature enable/disable
+ *
+ * @adev: gsgpu_device pointer
+ * @bool enable true: enable gfx off feature, false: disable gfx off feature
+ *
+ * 1. gfx off feature will be enabled by gfx ip after gfx cg gp enabled.
+ * 2. other client can send request to disable gfx off feature, the request should be honored.
+ * 3. other client can cancel their request of disable gfx off feature
+ * 4. other client should not send request to enable gfx off feature before disable gfx off feature.
+ */
+
+void gsgpu_gfx_off_ctrl(struct gsgpu_device *adev, bool enable)
+{
+	unsigned long delay = GFX_OFF_DELAY_ENABLE;
+
+	mutex_lock(&adev->gfx.gfx_off_mutex);
+
+	if (enable) {
+		/* If the count is already 0, it means there's an imbalance bug somewhere.
+		 * Note that the bug may be in a different caller than the one which triggers the
+		 * WARN_ON_ONCE.
+		 */
+		if (WARN_ON_ONCE(adev->gfx.gfx_off_req_count == 0))
+			goto unlock;
+
+		adev->gfx.gfx_off_req_count--;
+
+		if (adev->gfx.gfx_off_req_count == 0 &&
+		    !adev->gfx.gfx_off_state) {
+			{
+				schedule_delayed_work(&adev->gfx.gfx_off_delay_work,
+					      delay);
+			}
+		}
+	} else {
+		if (adev->gfx.gfx_off_req_count == 0) {
+			cancel_delayed_work_sync(&adev->gfx.gfx_off_delay_work);
+
+			if (adev->gfx.gfx_off_state) {
+				adev->gfx.gfx_off_state = false;
+
+				if (adev->gfx.funcs->init_spm_golden) {
+					dev_dbg(adev->dev,
+						"GFXOFF is disabled, re-init SPM golden settings\n");
+					gsgpu_gfx_init_spm_golden(adev);
+				}
+			}
+		}
+
+		adev->gfx.gfx_off_req_count++;
+	}
+
+unlock:
+	mutex_unlock(&adev->gfx.gfx_off_mutex);
+}

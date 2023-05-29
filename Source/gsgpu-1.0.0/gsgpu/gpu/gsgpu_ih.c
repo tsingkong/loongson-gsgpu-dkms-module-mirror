@@ -21,10 +21,26 @@
  *
  */
 
-#include <drm/drmP.h>
+#include <linux/dma-mapping.h>
+
 #include "gsgpu.h"
 #include "gsgpu_ih.h"
 #include "ivsrcid/ivsrcid_vislands30.h"
+
+/*
+ * Interrupts
+ * Starting with r6xx, interrupts are handled via a ring buffer.
+ * Ring buffers are areas of GPU accessible memory that the GPU
+ * writes interrupt vectors into and the host reads vectors out of.
+ * There is a rptr (read pointer) that determines where the
+ * host is currently reading, and a wptr (write pointer)
+ * which determines where the GPU has written.  When the
+ * pointers are equal, the ring is idle.  When the GPU
+ * writes vectors to the ring buffer, it increments the
+ * wptr.  When there is an interrupt, the host then starts
+ * fetching commands and processing them until the pointers are
+ * equal again at which point it updates the rptr.
+ */
 
 static void gsgpu_ih_set_interrupt_funcs(struct gsgpu_device *adev);
 
@@ -33,7 +49,7 @@ static void gsgpu_ih_set_interrupt_funcs(struct gsgpu_device *adev);
  *
  * @adev: gsgpu_device pointer
  *
- * Enable the interrupt ring buffer  .
+ * Enable the interrupt ring buffer .
  */
 static void gsgpu_ih_enable_interrupts(struct gsgpu_device *adev)
 {
@@ -45,7 +61,7 @@ static void gsgpu_ih_enable_interrupts(struct gsgpu_device *adev)
  *
  * @adev: gsgpu_device pointer
  *
- * Disable the interrupt ring buffer  .
+ * Disable the interrupt ring buffer .
  */
 static void gsgpu_ih_disable_interrupts(struct gsgpu_device *adev)
 {
@@ -60,12 +76,13 @@ static void gsgpu_ih_disable_interrupts(struct gsgpu_device *adev)
  *
  * Allocate a ring buffer for the interrupt controller,
  * enable the RLC, disable interrupts, enable the IH
- * ring buffer and enable it  .
+ * ring buffer and enable it .
  * Called at device load and reume.
  * Returns 0 for success, errors for failure.
  */
 static int gsgpu_ih_irq_init(struct gsgpu_device *adev)
 {
+	// struct gsgpu_ih_ring *ih = &adev->irq.ih;
 	int rb_bufsz;
 	u64 wptr_off;
 
@@ -76,10 +93,7 @@ static int gsgpu_ih_irq_init(struct gsgpu_device *adev)
 	WREG32(GSGPU_INT_CB_SIZE_OFFSET, rb_bufsz);
 
 	/* set the writeback address whether it's enabled or not */
-	if (adev->irq.ih.use_bus_addr)
-		wptr_off = adev->irq.ih.rb_dma_addr;
-	else
-		wptr_off = adev->wb.gpu_addr;
+	wptr_off = adev->wb.gpu_addr;
 	WREG32(GSGPU_INT_CB_BASE_LO_OFFSET, lower_32_bits(wptr_off));
 	WREG32(GSGPU_INT_CB_BASE_HI_OFFSET, upper_32_bits(wptr_off));
 
@@ -100,7 +114,7 @@ static int gsgpu_ih_irq_init(struct gsgpu_device *adev)
  *
  * @adev: gsgpu_device pointer
  *
- * Disable interrupts on the hw  .
+ * Disable interrupts on the hw .
  */
 static void gsgpu_ih_irq_disable(struct gsgpu_device *adev)
 {
@@ -110,54 +124,53 @@ static void gsgpu_ih_irq_disable(struct gsgpu_device *adev)
 	mdelay(1);
 }
 
-static u32 ih_func_get_wptr(struct gsgpu_device *adev)
+/**
+ * ih_func_get_wptr - get the IH ring buffer wptr
+ *
+ * @adev: gsgpu_device pointer
+ * @ih: IH ring buffer to fetch wptr
+ *
+ * Get the IH ring buffer wptr from either the register
+ * or the writeback memory buffer .  Also check for
+ * ring buffer overflow and deal with it.
+ * Used by gsgpu_irq_process.
+ * Returns the value of the wptr.
+ */
+static u32 ih_func_get_wptr(struct gsgpu_device *adev,
+			  struct gsgpu_ih_ring *ih)
 {
 	u32 wptr;
-
-	if (adev->irq.ih.use_bus_addr)
-		wptr = le32_to_cpu(RREG32(GSGPU_INT_CB_WPTR_OFFSET));
-	else
-		wptr = le32_to_cpu(RREG32(GSGPU_INT_CB_WPTR_OFFSET));
-
-	return (wptr & adev->irq.ih.ptr_mask);
+	wptr = le32_to_cpu(RREG32(GSGPU_INT_CB_WPTR_OFFSET));
+	
+	return (wptr & ih->ptr_mask);
 }
 
-static bool ih_func_prescreen_iv(struct gsgpu_device *adev)
-{
-	u32 ring_index = adev->irq.ih.rptr;
-	u16 pasid;
-
-	switch (le32_to_cpu(adev->irq.ih.ring[ring_index]) & 0xff) {
-	case VISLANDS30_IV_SRCID_GFX_PAGE_INV_FAULT:
-	case VISLANDS30_IV_SRCID_GFX_MEM_PROT_FAULT:
-		pasid = le32_to_cpu(adev->irq.ih.ring[ring_index + 2]) >> 16;
-		if (!pasid || gsgpu_vm_pasid_fault_credit(adev, pasid))
-			return true;
-		break;
-	default:
-		/* Not a VM fault */
-		return true;
-	}
-
-	adev->irq.ih.rptr += 4;
-	return false;
-}
-
+/**
+ * ih_func_decode_iv - decode an interrupt vector
+ *
+ * @adev: gsgpu_device pointer
+ * @ih: IH ring buffer to decode
+ * @entry: IV entry to place decoded information into
+ *
+ * Decodes the interrupt vector at the current rptr
+ * position and also advance the position.
+ */
 static void ih_func_decode_iv(struct gsgpu_device *adev,
-				 struct gsgpu_iv_entry *entry)
+			    struct gsgpu_ih_ring *ih,
+			    struct gsgpu_iv_entry *entry)
 {
 	/* wptr/rptr are in bytes! */
 	u32 ring_index = adev->irq.ih.rptr;
 	uint32_t dw[4];
 
-	dw[0] = le32_to_cpu(adev->irq.ih.ring[ring_index + 0]);
-	dw[1] = le32_to_cpu(adev->irq.ih.ring[ring_index + 1]);
-	dw[2] = le32_to_cpu(adev->irq.ih.ring[ring_index + 2]);
-	dw[3] = le32_to_cpu(adev->irq.ih.ring[ring_index + 3]);
+	dw[0] = le32_to_cpu(ih->ring[ring_index + 0]);
+	dw[1] = le32_to_cpu(ih->ring[ring_index + 1]);
+	dw[2] = le32_to_cpu(ih->ring[ring_index + 2]);
+	dw[3] = le32_to_cpu(ih->ring[ring_index + 3]);
 
 	DRM_DEBUG("ih_func_decode_iv dw0 %x dw1 %x dw2 %x dw3 %x \n", dw[0], dw[1], dw[2], dw[3]);
 
-	entry->client_id = GSGPU_IH_CLIENTID_LEGACY;
+	entry->client_id = GSGPU_IRQ_CLIENTID_LEGACY;
 	entry->src_id = dw[0] & 0xff;
 	entry->src_data[0] = dw[1] & 0xffffffff;
 	entry->ring_id = dw[2] & 0xff;
@@ -169,7 +182,16 @@ static void ih_func_decode_iv(struct gsgpu_device *adev,
 	adev->irq.ih.rptr += 4;
 }
 
-static void ih_func_set_rptr(struct gsgpu_device *adev)
+/**
+ * ih_func_set_rptr - set the IH ring buffer rptr
+ *
+ * @adev: gsgpu_device pointer
+ * @ih: IH ring buffer to set rptr
+ *
+ * Set the IH ring buffer rptr.
+ */
+static void ih_func_set_rptr(struct gsgpu_device *adev,
+			   struct gsgpu_ih_ring *ih)
 {
 	WREG32(GSGPU_INT_CB_RPTR_OFFSET, adev->irq.ih.rptr);
 }
@@ -188,7 +210,7 @@ static int gsgpu_ih_sw_init(void *handle)
 	int r;
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
-	r = gsgpu_ih_ring_init(adev, 4 * 1024, true);
+	r = gsgpu_ih_ring_init(adev, &adev->irq.ih, 4 * 1024, true);
 	if (r)
 		return r;
 
@@ -205,8 +227,7 @@ static int gsgpu_ih_sw_fini(void *handle)
 {
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
-	gsgpu_irq_fini(adev);
-	gsgpu_ih_ring_fini(adev);
+	gsgpu_irq_fini_sw(adev);
 	gsgpu_hw_sema_mgr_fini(adev);
 
 	return 0;
@@ -249,7 +270,6 @@ static int gsgpu_ih_resume(void *handle)
 
 static bool gsgpu_ih_is_idle(void *handle)
 {
-
 	return true;
 }
 
@@ -274,15 +294,14 @@ static const struct gsgpu_ip_funcs gsgpu_ih_ip_funcs = {
 
 static const struct gsgpu_ih_funcs gsgpu_ih_funcs = {
 	.get_wptr = ih_func_get_wptr,
-	.prescreen_iv = ih_func_prescreen_iv,
 	.decode_iv = ih_func_decode_iv,
-	.set_rptr = ih_func_set_rptr
+	.decode_iv_ts = NULL,
+	.set_rptr = ih_func_set_rptr,
 };
 
 static void gsgpu_ih_set_interrupt_funcs(struct gsgpu_device *adev)
 {
-	if (adev->irq.ih_funcs == NULL)
-		adev->irq.ih_funcs = &gsgpu_ih_funcs;
+	adev->irq.ih_funcs = &gsgpu_ih_funcs;
 }
 
 const struct gsgpu_ip_block_version gsgpu_ih_ip_block =
@@ -294,44 +313,22 @@ const struct gsgpu_ip_block_version gsgpu_ih_ip_block =
 	.funcs = &gsgpu_ih_ip_funcs,
 };
 
-/**
- * gsgpu_ih_ring_alloc - allocate memory for the IH ring
- *
- * @adev: gsgpu_device pointer
- *
- * Allocate a ring buffer for the interrupt controller.
- * Returns 0 for success, errors for failure.
- */
-static int gsgpu_ih_ring_alloc(struct gsgpu_device *adev)
-{
-	int r;
-
-	/* Allocate ring buffer */
-	if (adev->irq.ih.ring_obj == NULL) {
-		r = gsgpu_bo_create_kernel(adev, adev->irq.ih.ring_size,
-					    PAGE_SIZE, GSGPU_GEM_DOMAIN_GTT,
-					    &adev->irq.ih.ring_obj,
-					    &adev->irq.ih.gpu_addr,
-					    (void **)&adev->irq.ih.ring);
-		if (r) {
-			DRM_ERROR("gsgpu: failed to create ih ring buffer (%d).\n", r);
-			return r;
-		}
-	}
-	return 0;
-}
+// ================================================================
 
 /**
  * gsgpu_ih_ring_init - initialize the IH state
  *
  * @adev: gsgpu_device pointer
+ * @ih: ih ring to initialize
+ * @ring_size: ring size to allocate
+ * @use_bus_addr: true when we can use dma_alloc_coherent
  *
  * Initializes the IH state and allocates a buffer
  * for the IH ring buffer.
  * Returns 0 for success, errors for failure.
  */
-int gsgpu_ih_ring_init(struct gsgpu_device *adev, unsigned ring_size,
-			bool use_bus_addr)
+int gsgpu_ih_ring_init(struct gsgpu_device *adev, struct gsgpu_ih_ring *ih,
+			unsigned ring_size, bool use_bus_addr)
 {
 	u32 rb_bufsz;
 	int r;
@@ -339,203 +336,192 @@ int gsgpu_ih_ring_init(struct gsgpu_device *adev, unsigned ring_size,
 	/* Align ring size */
 	rb_bufsz = order_base_2(ring_size / 4);
 	ring_size = (1 << rb_bufsz) * 4;
-	adev->irq.ih.ring_size = ring_size;
-	adev->irq.ih.ptr_mask = adev->irq.ih.ring_size / 4 - 1;
-	adev->irq.ih.rptr = 0;
-	adev->irq.ih.use_bus_addr = use_bus_addr;
+	ih->ring_size = ring_size;
+	ih->ptr_mask = ih->ring_size / 4 - 1;
+	ih->rptr = 0;
+	ih->use_bus_addr = use_bus_addr;
 
-	if (adev->irq.ih.use_bus_addr) {
-		if (!adev->irq.ih.ring) {
-			/* add 8 bytes for the rptr/wptr shadows and
-			 * add them to the end of the ring allocation.
-			 */
-			adev->irq.ih.ring = pci_alloc_consistent(adev->pdev,
-								 adev->irq.ih.ring_size + 8,
-								 &adev->irq.ih.rb_dma_addr);
-			if (adev->irq.ih.ring == NULL)
-				return -ENOMEM;
-			memset((void *)adev->irq.ih.ring, 0, adev->irq.ih.ring_size + 8);
-			adev->irq.ih.wptr_offs = (adev->irq.ih.ring_size / 4) + 0;
-			adev->irq.ih.rptr_offs = (adev->irq.ih.ring_size / 4) + 1;
-		}
-		return 0;
+	if (use_bus_addr) {
+		dma_addr_t dma_addr;
+
+		if (ih->ring)
+			return 0;
+
+		/* add 8 bytes for the rptr/wptr shadows and
+		 * add them to the end of the ring allocation.
+		 */
+		ih->ring = dma_alloc_coherent(adev->dev, ih->ring_size + 8,
+					      &dma_addr, GFP_KERNEL);
+		if (ih->ring == NULL)
+			return -ENOMEM;
+
+		ih->gpu_addr = dma_addr;
+		ih->wptr_addr = dma_addr + ih->ring_size;
+		ih->wptr_cpu = &ih->ring[ih->ring_size / 4];
+		ih->rptr_addr = dma_addr + ih->ring_size + 4;
+		ih->rptr_cpu = &ih->ring[(ih->ring_size / 4) + 1];
 	} else {
-		r = gsgpu_device_wb_get(adev, &adev->irq.ih.wptr_offs);
+		unsigned wptr_offs, rptr_offs;
+
+		r = gsgpu_device_wb_get(adev, &wptr_offs);
+		if (r)
+			return r;
+
+		r = gsgpu_device_wb_get(adev, &rptr_offs);
 		if (r) {
-			dev_err(adev->dev, "(%d) ih wptr_offs wb alloc failed\n", r);
+			gsgpu_device_wb_free(adev, wptr_offs);
 			return r;
 		}
 
-		r = gsgpu_device_wb_get(adev, &adev->irq.ih.rptr_offs);
+		r = gsgpu_bo_create_kernel(adev, ih->ring_size, PAGE_SIZE,
+					    GSGPU_GEM_DOMAIN_GTT,
+					    &ih->ring_obj, &ih->gpu_addr,
+					    (void **)&ih->ring);
 		if (r) {
-			gsgpu_device_wb_free(adev, adev->irq.ih.wptr_offs);
-			dev_err(adev->dev, "(%d) ih rptr_offs wb alloc failed\n", r);
+			gsgpu_device_wb_free(adev, rptr_offs);
+			gsgpu_device_wb_free(adev, wptr_offs);
 			return r;
 		}
 
-		return gsgpu_ih_ring_alloc(adev);
+		ih->wptr_addr = adev->wb.gpu_addr + wptr_offs * 4;
+		ih->wptr_cpu = &adev->wb.wb[wptr_offs];
+		ih->rptr_addr = adev->wb.gpu_addr + rptr_offs * 4;
+		ih->rptr_cpu = &adev->wb.wb[rptr_offs];
 	}
+
+	init_waitqueue_head(&ih->wait_process);
+	return 0;
 }
 
 /**
  * gsgpu_ih_ring_fini - tear down the IH state
  *
  * @adev: gsgpu_device pointer
+ * @ih: ih ring to tear down
  *
  * Tears down the IH state and frees buffer
  * used for the IH ring buffer.
  */
-void gsgpu_ih_ring_fini(struct gsgpu_device *adev)
+void gsgpu_ih_ring_fini(struct gsgpu_device *adev, struct gsgpu_ih_ring *ih)
 {
-	if (adev->irq.ih.use_bus_addr) {
-		if (adev->irq.ih.ring) {
-			/* add 8 bytes for the rptr/wptr shadows and
-			 * add them to the end of the ring allocation.
-			 */
-			pci_free_consistent(adev->pdev, adev->irq.ih.ring_size + 8,
-					    (void *)adev->irq.ih.ring,
-					    adev->irq.ih.rb_dma_addr);
-			adev->irq.ih.ring = NULL;
-		}
+
+	if (!ih->ring)
+		return;
+
+	if (ih->use_bus_addr) {
+
+		/* add 8 bytes for the rptr/wptr shadows and
+		 * add them to the end of the ring allocation.
+		 */
+		dma_free_coherent(adev->dev, ih->ring_size + 8,
+				  (void *)ih->ring, ih->gpu_addr);
+		ih->ring = NULL;
 	} else {
-		gsgpu_bo_free_kernel(&adev->irq.ih.ring_obj,
-				      &adev->irq.ih.gpu_addr,
-				      (void **)&adev->irq.ih.ring);
-		gsgpu_device_wb_free(adev, adev->irq.ih.wptr_offs);
-		gsgpu_device_wb_free(adev, adev->irq.ih.rptr_offs);
+		gsgpu_bo_free_kernel(&ih->ring_obj, &ih->gpu_addr,
+				      (void **)&ih->ring);
+		gsgpu_device_wb_free(adev, (ih->wptr_addr - ih->gpu_addr) / 4);
+		gsgpu_device_wb_free(adev, (ih->rptr_addr - ih->gpu_addr) / 4);
 	}
+}
+
+/**
+ * gsgpu_ih_ring_write - write IV to the ring buffer
+ *
+ * @ih: ih ring to write to
+ * @iv: the iv to write
+ * @num_dw: size of the iv in dw
+ *
+ * Writes an IV to the ring buffer using the CPU and increment the wptr.
+ * Used for testing and delegating IVs to a software ring.
+ */
+void gsgpu_ih_ring_write(struct gsgpu_ih_ring *ih, const uint32_t *iv,
+			  unsigned int num_dw)
+{
+	uint32_t wptr = le32_to_cpu(*ih->wptr_cpu) >> 2;
+	unsigned int i;
+
+	for (i = 0; i < num_dw; ++i)
+	        ih->ring[wptr++] = cpu_to_le32(iv[i]);
+
+	wptr <<= 2;
+	wptr &= ih->ptr_mask;
+
+	/* Only commit the new wptr if we don't overflow */
+	if (wptr != READ_ONCE(ih->rptr)) {
+		wmb();
+		WRITE_ONCE(*ih->wptr_cpu, cpu_to_le32(wptr));
+	}
+}
+
+/**
+ * gsgpu_ih_wait_on_checkpoint_process_ts - wait to process IVs up to checkpoint
+ *
+ * @adev: gsgpu_device pointer
+ * @ih: ih ring to process
+ *
+ * Used to ensure ring has processed IVs up to the checkpoint write pointer.
+ */
+int gsgpu_ih_wait_on_checkpoint_process_ts(struct gsgpu_device *adev,
+					struct gsgpu_ih_ring *ih)
+{
+	uint32_t checkpoint_wptr;
+	uint64_t checkpoint_ts;
+	long timeout = HZ;
+
+	if (!ih->enabled || adev->shutdown)
+		return -ENODEV;
+
+	checkpoint_wptr = gsgpu_ih_get_wptr(adev, ih);
+	/* Order wptr with ring data. */
+	rmb();
+	checkpoint_ts = gsgpu_ih_decode_iv_ts(adev, ih, checkpoint_wptr, -1);
+
+	return wait_event_interruptible_timeout(ih->wait_process,
+		    gsgpu_ih_ts_after(checkpoint_ts, ih->processed_timestamp) ||
+		    ih->rptr == gsgpu_ih_get_wptr(adev, ih), timeout);
 }
 
 /**
  * gsgpu_ih_process - interrupt handler
  *
  * @adev: gsgpu_device pointer
+ * @ih: ih ring to process
  *
- * Interrupt hander  , walk the IH ring.
+ * Interrupt hander , walk the IH ring.
  * Returns irq process return code.
  */
-int gsgpu_ih_process(struct gsgpu_device *adev)
+int gsgpu_ih_process(struct gsgpu_device *adev, struct gsgpu_ih_ring *ih)
 {
-	struct gsgpu_iv_entry entry;
+	unsigned int count;
 	u32 wptr;
 
-	if (!adev->irq.ih.enabled || adev->shutdown)
+	if (!ih->enabled || adev->shutdown)
 		return IRQ_NONE;
 
 	if (!adev->irq.msi_enabled)
 		WREG32(GSGPU_HOST_INT, 0);
 
-	wptr = gsgpu_ih_get_wptr(adev);
+	wptr = gsgpu_ih_get_wptr(adev, ih);
 
 restart_ih:
-	/* is somebody else already processing irqs? */
-	if (atomic_xchg(&adev->irq.ih.lock, 1))
-		return IRQ_NONE;
-
-	DRM_DEBUG("%s: rptr %d, wptr %d\n", __func__, adev->irq.ih.rptr, wptr);
+	count  = GSGPU_IH_MAX_NUM_IVS;
+	DRM_DEBUG("%s: rptr %d, wptr %d\n", __func__, ih->rptr, wptr);
 
 	/* Order reading of wptr vs. reading of IH ring data */
 	rmb();
 
-	while (adev->irq.ih.rptr != wptr) {
-		u32 ring_index = adev->irq.ih.rptr;
-
-		/* Prescreening of high-frequency interrupts */
-		if (!gsgpu_ih_prescreen_iv(adev)) {
-			adev->irq.ih.rptr &= adev->irq.ih.ptr_mask;
-			continue;
-		}
-
-		entry.iv_entry = (const uint32_t *)
-			&adev->irq.ih.ring[ring_index];
-		gsgpu_ih_decode_iv(adev, &entry);
-		adev->irq.ih.rptr &= adev->irq.ih.ptr_mask;
-
-		gsgpu_irq_dispatch(adev, &entry);
+	while (ih->rptr != wptr && --count) {
+		gsgpu_irq_dispatch(adev, ih);
+		ih->rptr &= ih->ptr_mask;
 	}
-	gsgpu_ih_set_rptr(adev);
-	atomic_set(&adev->irq.ih.lock, 0);
+
+	gsgpu_ih_set_rptr(adev, ih);
+	wake_up_all(&ih->wait_process);
 
 	/* make sure wptr hasn't changed while processing */
-	wptr = gsgpu_ih_get_wptr(adev);
-	if (wptr != adev->irq.ih.rptr)
+	wptr = gsgpu_ih_get_wptr(adev, ih);
+	if (wptr != ih->rptr)
 		goto restart_ih;
 
 	return IRQ_HANDLED;
-}
-
-/**
- * gsgpu_ih_add_fault - Add a page fault record
- *
- * @adev: gsgpu device pointer
- * @key: 64-bit encoding of PASID and address
- *
- * This should be called when a retry page fault interrupt is
- * received. If this is a new page fault, it will be added to a hash
- * table. The return value indicates whether this is a new fault, or
- * a fault that was already known and is already being handled.
- *
- * If there are too many pending page faults, this will fail. Retry
- * interrupts should be ignored in this case until there is enough
- * free space.
- *
- * Returns 0 if the fault was added, 1 if the fault was already known,
- * -ENOSPC if there are too many pending faults.
- */
-int gsgpu_ih_add_fault(struct gsgpu_device *adev, u64 key)
-{
-	unsigned long flags;
-	int r = -ENOSPC;
-
-	if (WARN_ON_ONCE(!adev->irq.ih.faults))
-		/* Should be allocated in <IP>_ih_sw_init on GPUs that
-		 * support retry faults and require retry filtering.
-		 */
-		return r;
-
-	spin_lock_irqsave(&adev->irq.ih.faults->lock, flags);
-
-	/* Only let the hash table fill up to 50% for best performance */
-	if (adev->irq.ih.faults->count >= (1 << (GSGPU_PAGEFAULT_HASH_BITS-1)))
-		goto unlock_out;
-
-	r = chash_table_copy_in(&adev->irq.ih.faults->hash, key, NULL);
-	if (!r)
-		adev->irq.ih.faults->count++;
-
-	/* chash_table_copy_in should never fail unless we're losing count */
-	WARN_ON_ONCE(r < 0);
-
-unlock_out:
-	spin_unlock_irqrestore(&adev->irq.ih.faults->lock, flags);
-	return r;
-}
-
-/**
- * gsgpu_ih_clear_fault - Remove a page fault record
- *
- * @adev: gsgpu device pointer
- * @key: 64-bit encoding of PASID and address
- *
- * This should be called when a page fault has been handled. Any
- * future interrupt with this key will be processed as a new
- * page fault.
- */
-void gsgpu_ih_clear_fault(struct gsgpu_device *adev, u64 key)
-{
-	unsigned long flags;
-	int r;
-
-	if (!adev->irq.ih.faults)
-		return;
-
-	spin_lock_irqsave(&adev->irq.ih.faults->lock, flags);
-
-	r = chash_table_remove(&adev->irq.ih.faults->hash, key, NULL);
-	if (!WARN_ON_ONCE(r < 0)) {
-		adev->irq.ih.faults->count--;
-		WARN_ON_ONCE(adev->irq.ih.faults->count < 0);
-	}
-
-	spin_unlock_irqrestore(&adev->irq.ih.faults->lock, flags);
 }

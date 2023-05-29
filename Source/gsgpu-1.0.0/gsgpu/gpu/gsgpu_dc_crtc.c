@@ -5,7 +5,7 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <gsgpu.h>
-#include <loongson-pch.h>
+#include "loongson-pch.h"
 #include "gsgpu_dc.h"
 #include "gsgpu_dc_resource.h"
 #include "gsgpu_dc_plane.h"
@@ -225,7 +225,7 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 
 bool dc_crtc_enable(struct gsgpu_crtc *acrtc, bool enable)
 {
-	struct gsgpu_device *adev = acrtc->base.dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(acrtc->base.dev);
 	u32 crtc_id;
 	u32 crtc_cfg, hdmi_ctrl, crtc_pan;
 
@@ -461,7 +461,7 @@ void dc_crtc_destroy(struct gsgpu_dc_crtc *crtc)
 }
 
 static int crtc_helper_atomic_check(struct drm_crtc *crtc,
-				       struct drm_crtc_state *state)
+				       struct drm_atomic_state *state)
 {
 	return 0;
 }
@@ -496,7 +496,7 @@ static inline int dc_set_vblank(struct drm_crtc *crtc, bool enable)
 {
 	enum dc_irq_source irq_source;
 	struct gsgpu_crtc *acrtc = to_gsgpu_crtc(crtc);
-	struct gsgpu_device *adev = crtc->dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(crtc->dev);
 
 	irq_source = DC_IRQ_TYPE_VSYNC + acrtc->crtc_id;
 	return dc_interrupt_enable(adev->dc, irq_source, enable) ? 0 : -EBUSY;
@@ -541,7 +541,7 @@ int gsgpu_dc_crtc_init(struct gsgpu_device *adev,
 	if (!acrtc)
 		goto fail;
 
-	res = drm_crtc_init_with_planes(adev->ddev, &acrtc->base, plane,
+	res = drm_crtc_init_with_planes(adev_to_drm(adev), &acrtc->base, plane,
 			&cursor_plane->base, &gsgpu_dc_crtc_funcs, NULL);
 	if (!res)
 		acrtc->crtc_id = crtc_index;

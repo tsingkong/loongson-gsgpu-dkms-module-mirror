@@ -27,30 +27,35 @@
 #include <linux/hashtable.h>
 
 struct dma_fence;
-struct reservation_object;
+struct dma_resv;
 struct gsgpu_device;
 struct gsgpu_ring;
+struct gsgpu_job;
+
+enum gsgpu_sync_mode {
+	GSGPU_SYNC_ALWAYS,
+	GSGPU_SYNC_NE_OWNER,
+	GSGPU_SYNC_EQ_OWNER,
+	GSGPU_SYNC_EXPLICIT
+};
 
 /*
  * Container for fences used to sync command submissions.
  */
 struct gsgpu_sync {
 	DECLARE_HASHTABLE(fences, 4);
-	struct dma_fence	*last_vm_update;
 };
 
 void gsgpu_sync_create(struct gsgpu_sync *sync);
-int gsgpu_sync_fence(struct gsgpu_device *adev, struct gsgpu_sync *sync,
-		      struct dma_fence *f, bool explicit);
-int gsgpu_sync_resv(struct gsgpu_device *adev,
-		     struct gsgpu_sync *sync,
-		     struct reservation_object *resv,
-		     void *owner,
-		     bool explicit_sync);
+int gsgpu_sync_fence(struct gsgpu_sync *sync, struct dma_fence *f);
+int gsgpu_sync_resv(struct gsgpu_device *adev, struct gsgpu_sync *sync,
+		     struct dma_resv *resv, enum gsgpu_sync_mode mode,
+		     void *owner);
 struct dma_fence *gsgpu_sync_peek_fence(struct gsgpu_sync *sync,
 				     struct gsgpu_ring *ring);
-struct dma_fence *gsgpu_sync_get_fence(struct gsgpu_sync *sync, bool *explicit);
+struct dma_fence *gsgpu_sync_get_fence(struct gsgpu_sync *sync);
 int gsgpu_sync_clone(struct gsgpu_sync *source, struct gsgpu_sync *clone);
+int gsgpu_sync_push_to_job(struct gsgpu_sync *sync, struct gsgpu_job *job);
 int gsgpu_sync_wait(struct gsgpu_sync *sync, bool intr);
 void gsgpu_sync_free(struct gsgpu_sync *sync);
 int gsgpu_sync_init(void);

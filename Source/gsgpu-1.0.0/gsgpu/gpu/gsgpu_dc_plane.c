@@ -45,7 +45,7 @@ static int dc_plane_helper_prepare_fb(struct drm_plane *plane,
 		return r;
 
 	if (plane->type != DRM_PLANE_TYPE_CURSOR)
-		domain = gsgpu_display_supported_domains(adev);
+		domain = gsgpu_display_supported_domains(adev, rbo->flags);
 	else
 		domain = GSGPU_GEM_DOMAIN_VRAM;
 
@@ -106,7 +106,7 @@ static void dc_plane_helper_cleanup_fb(struct drm_plane *plane,
 }
 
 static int dc_plane_atomic_check(struct drm_plane *plane,
-				 struct drm_plane_state *state)
+				 struct drm_atomic_state *state)
 {
 	return 0;
 }
@@ -143,7 +143,7 @@ int gsgpu_dc_plane_init(struct gsgpu_device *adev,
 	switch (aplane->base.type) {
 	case DRM_PLANE_TYPE_PRIMARY:
 		res = drm_universal_plane_init(
-				adev->ddev,
+				adev_to_drm(adev),
 				&aplane->base,
 				possible_crtcs,
 				&dc_plane_funcs,
@@ -153,7 +153,7 @@ int gsgpu_dc_plane_init(struct gsgpu_device *adev,
 		break;
 	case DRM_PLANE_TYPE_CURSOR:
 		res = drm_universal_plane_init(
-				adev->ddev,
+				adev_to_drm(adev),
 				&aplane->base,
 				possible_crtcs,
 				&dc_plane_funcs,
@@ -179,7 +179,7 @@ int initialize_plane(struct gsgpu_device *adev,
 	int ret = 0;
 
 	plane = kzalloc(sizeof(struct gsgpu_plane), GFP_KERNEL);
-	mode_info->planes[plane_id] = plane;
+	mode_info->planes[plane_id] = &(plane->base);
 
 	if (!plane) {
 		DRM_ERROR("KMS: Failed to allocate plane\n");
@@ -189,7 +189,7 @@ int initialize_plane(struct gsgpu_device *adev,
 
 	possible_crtcs = 1 << plane_id;
 
-	ret = gsgpu_dc_plane_init(adev, mode_info->planes[plane_id], possible_crtcs);
+	ret = gsgpu_dc_plane_init(adev, plane, possible_crtcs);
 
 	if (ret) {
 		DRM_ERROR("KMS: Failed to initialize plane\n");

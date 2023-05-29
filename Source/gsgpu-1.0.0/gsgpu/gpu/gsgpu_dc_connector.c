@@ -12,32 +12,22 @@
 
 static struct drm_encoder *best_encoder(struct drm_connector *connector)
 {
-	int enc_id = connector->encoder_ids[0];
-	struct drm_mode_object *obj;
 	struct drm_encoder *encoder;
 
 	DRM_DEBUG_DRIVER("Finding the best encoder\n");
-
-	/* pick the encoder ids */
-	if (enc_id) {
-		obj = drm_mode_object_find(connector->dev, NULL, enc_id, DRM_MODE_OBJECT_ENCODER);
-		if (!obj) {
-			DRM_ERROR("Couldn't find a matching encoder for our connector\n");
-			return NULL;
-		}
-		encoder = obj_to_encoder(obj);
+	/* pick the first one */
+	drm_connector_for_each_possible_encoder(connector, encoder) {
 		return encoder;
 	}
 
-	DRM_ERROR("No encoder id\n");
-
+	DRM_ERROR("Couldn't find a matching encoder for our connector\n");
 	return NULL;
 }
 
 static int gsgpu_dc_connector_get_modes(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
-	struct gsgpu_device *lgdev = dev->dev_private;
+	struct gsgpu_device *lgdev = drm_to_adev(dev);
 	struct gsgpu_dc_i2c *i2c = lgdev->i2c[connector->index];
 	struct edid *edid = NULL;
 	int ret;
@@ -66,7 +56,7 @@ static enum drm_connector_status
 gsgpu_dc_connector_detect(struct drm_connector *connector, bool force)
 {
 	struct drm_device *dev = connector->dev;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	enum drm_connector_status status = connector_status_disconnected;
 	int index = connector->index;
 	u32 reg_val;
@@ -184,7 +174,7 @@ int gsgpu_dc_connector_init(struct gsgpu_device *adev, uint32_t link_index)
 		return -ENOMEM;
 
 	dc_connector = adev->dc->link_info[link_index].connector;
-	res = drm_connector_init(adev->ddev, &lconnector->base,
+	res = drm_connector_init(adev_to_drm(adev), &lconnector->base,
 				 &gsgpu_dc_connector_funcs,
 				 dc_connector->resource->type);
 	if (res) {

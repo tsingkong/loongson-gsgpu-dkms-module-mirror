@@ -43,12 +43,11 @@
  */
 
 #include <linux/irq.h>
-#include <linux/pm_runtime.h>
+#include <linux/pci.h>
 
-#include <drm/drmP.h>
-#include <drm/drm_crtc_helper.h>
+#include <drm/drm_vblank.h>
 #include <drm/gsgpu_drm.h>
-
+#include <drm/drm_drv.h>
 #include "gsgpu.h"
 #include "gsgpu_ih.h"
 #include "gsgpu_trace.h"
@@ -56,23 +55,48 @@
 #include "gsgpu_dc_reg.h"
 #include "ivsrcid/ivsrcid_vislands30.h"
 
+#include <linux/pm_runtime.h>
+
+#ifdef CONFIG_DRM_GSGPU_DC
+#include "gsgpu_dm_irq.h"
+#endif
+
 #define GSGPU_WAIT_IDLE_TIMEOUT 200
 
-/**
- * gsgpu_irq_reset_work_func - execute GPU reset
- *
- * @work: work struct pointer
- *
- * Execute scheduled GPU reset (Cayman+).
- * This function is called when the IRQ handler thinks we need a GPU reset.
- */
-static void gsgpu_irq_reset_work_func(struct work_struct *work)
-{
-	struct gsgpu_device *adev = container_of(work, struct gsgpu_device,
-						  reset_work);
-
-	gsgpu_device_gpu_recover(adev, NULL, false);
-}
+const char *soc15_ih_clientid_name[] = {
+	"IH",
+	"SDMA2 or ACP",
+	"ATHUB",
+	"BIF",
+	"SDMA3 or DCE",
+	"SDMA4 or ISP",
+	"VMC1 or PCIE0",
+	"RLC",
+	"SDMA0",
+	"SDMA1",
+	"SE0SH",
+	"SE1SH",
+	"SE2SH",
+	"SE3SH",
+	"VCN1 or UVD1",
+	"THM",
+	"VCN or UVD",
+	"SDMA5 or VCE0",
+	"VMC",
+	"SDMA6 or XDMA",
+	"GRBM_CP",
+	"ATS",
+	"ROM_SMUIO",
+	"DF",
+	"SDMA7 or VCE1",
+	"PWR",
+	"reserved",
+	"UTCL2",
+	"EA",
+	"UTCL2LOG",
+	"MP0",
+	"MP1"
+};
 
 /**
  * gsgpu_irq_disable_all - disable *all* interrupts
@@ -88,7 +112,7 @@ void gsgpu_irq_disable_all(struct gsgpu_device *adev)
 	int r;
 
 	spin_lock_irqsave(&adev->irq.lock, irqflags);
-	for (i = 0; i < GSGPU_IH_CLIENTID_MAX; ++i) {
+	for (i = 0; i < GSGPU_IRQ_CLIENTID_MAX; ++i) {
 		if (!adev->irq.client[i].sources)
 			continue;
 
@@ -122,16 +146,62 @@ void gsgpu_irq_disable_all(struct gsgpu_device *adev)
  * Returns:
  * result of handling the IRQ, as defined by &irqreturn_t
  */
-irqreturn_t gsgpu_irq_handler(int irq, void *arg)
+static irqreturn_t gsgpu_irq_handler(int irq, void *arg)
 {
 	struct drm_device *dev = (struct drm_device *) arg;
-	struct gsgpu_device *adev = dev->dev_private;
+	struct gsgpu_device *adev = drm_to_adev(dev);
 	irqreturn_t ret;
 
-	ret = gsgpu_ih_process(adev);
+	ret = gsgpu_ih_process(adev, &adev->irq.ih);
 	if (ret == IRQ_HANDLED)
 		pm_runtime_mark_last_busy(dev->dev);
+
 	return ret;
+}
+
+/**
+ * gsgpu_irq_handle_ih1 - kick of processing for IH1
+ *
+ * @work: work structure in struct gsgpu_irq
+ *
+ * Kick of processing IH ring 1.
+ */
+static void gsgpu_irq_handle_ih1(struct work_struct *work)
+{
+	struct gsgpu_device *adev = container_of(work, struct gsgpu_device,
+						  irq.ih1_work);
+
+	gsgpu_ih_process(adev, &adev->irq.ih1);
+}
+
+/**
+ * gsgpu_irq_handle_ih2 - kick of processing for IH2
+ *
+ * @work: work structure in struct gsgpu_irq
+ *
+ * Kick of processing IH ring 2.
+ */
+static void gsgpu_irq_handle_ih2(struct work_struct *work)
+{
+	struct gsgpu_device *adev = container_of(work, struct gsgpu_device,
+						  irq.ih2_work);
+
+	gsgpu_ih_process(adev, &adev->irq.ih2);
+}
+
+/**
+ * gsgpu_irq_handle_ih_soft - kick of processing for ih_soft
+ *
+ * @work: work structure in struct gsgpu_irq
+ *
+ * Kick of processing IH soft ring.
+ */
+static void gsgpu_irq_handle_ih_soft(struct work_struct *work)
+{
+	struct gsgpu_device *adev = container_of(work, struct gsgpu_device,
+						  irq.ih_soft_work);
+
+	gsgpu_ih_process(adev, &adev->irq.ih_soft);
 }
 
 static irqreturn_t gsgpu_dc_irq_handler(int irq, void *arg)
@@ -156,7 +226,8 @@ static irqreturn_t gsgpu_dc_irq_handler(int irq, void *arg)
 		}
 
 		entry.src_id = i;
-		gsgpu_irq_dispatch(adev, &entry);
+		// gsgpu_irq_dispatch(adev, &entry);
+		gsgpu_irq_delegate(adev, &entry, 1);
 
 		int_reg = int_reg >> 1;
 		i++;
@@ -186,6 +257,21 @@ static bool gsgpu_msi_ok(struct gsgpu_device *adev)
 	return true;
 }
 
+// static void gsgpu_restore_msix(struct gsgpu_device *adev)
+// {
+// 	u16 ctrl;
+
+// 	pci_read_config_word(adev->pdev, adev->pdev->msix_cap + PCI_MSIX_FLAGS, &ctrl);
+// 	if (!(ctrl & PCI_MSIX_FLAGS_ENABLE))
+// 		return;
+
+// 	/* VF FLR */
+// 	ctrl &= ~PCI_MSIX_FLAGS_ENABLE;
+// 	pci_write_config_word(adev->pdev, adev->pdev->msix_cap + PCI_MSIX_FLAGS, ctrl);
+// 	ctrl |= PCI_MSIX_FLAGS_ENABLE;
+// 	pci_write_config_word(adev->pdev, adev->pdev->msix_cap + PCI_MSIX_FLAGS, ctrl);
+// }
+
 /**
  * gsgpu_irq_init - initialize interrupt handling
  *
@@ -200,6 +286,7 @@ static bool gsgpu_msi_ok(struct gsgpu_device *adev)
 int gsgpu_irq_init(struct gsgpu_device *adev)
 {
 	int r = 0;
+	unsigned int irq;
 	struct pci_dev *loongson_dc;
 
 	spin_lock_init(&adev->irq.lock);
@@ -208,23 +295,40 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
 	adev->irq.msi_enabled = false;
 
 	if (gsgpu_msi_ok(adev)) {
-		int ret = pci_enable_msi(adev->pdev);
-		if (!ret) {
+		int nvec = pci_msix_vec_count(adev->pdev);
+		unsigned int flags;
+
+		if (nvec <= 0) {
+			flags = PCI_IRQ_MSI;
+		} else {
+			flags = PCI_IRQ_MSI | PCI_IRQ_MSIX;
+		}
+		/* we only need one vector */
+		nvec = pci_alloc_irq_vectors(adev->pdev, 1, 1, flags);
+		if (nvec > 0) {
 			adev->irq.msi_enabled = true;
-			dev_dbg(adev->dev, "gsgpu: using MSI.\n");
+			dev_dbg(adev->dev, "using MSI/MSI-X.\n");
 		}
 	}
 
-	INIT_WORK(&adev->reset_work, gsgpu_irq_reset_work_func);
+	INIT_WORK(&adev->irq.ih1_work, gsgpu_irq_handle_ih1);
+	INIT_WORK(&adev->irq.ih2_work, gsgpu_irq_handle_ih2);
+	INIT_WORK(&adev->irq.ih_soft_work, gsgpu_irq_handle_ih_soft);
 
-	adev->irq.installed = true;
-	r = drm_irq_install(adev->ddev, adev->ddev->pdev->irq);
-	if (r) {
-		adev->irq.installed = false;
-		cancel_work_sync(&adev->reset_work);
+	/* Use vector 0 for MSI-X. */
+	r = pci_irq_vector(adev->pdev, 0);
+	if (r < 0)
 		return r;
-	}
-	adev->ddev->max_vblank_count = 0x00ffffff;
+	irq = r;
+
+	/* PCI devices require shared interrupts. */
+	r = request_irq(irq, gsgpu_irq_handler, IRQF_SHARED, adev_to_drm(adev)->driver->name,
+			adev_to_drm(adev));
+	if (r)
+		return r;
+	adev->irq.installed = true;
+	adev->irq.irq = irq;
+	adev_to_drm(adev)->max_vblank_count = 0x00ffffff;
 
 	loongson_dc = adev->loongson_dc;
 	if (loongson_dc) {
@@ -244,8 +348,24 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
 	return 0;
 }
 
+
+void gsgpu_irq_fini_hw(struct gsgpu_device *adev)
+{
+	if (adev->irq.installed) {
+		free_irq(adev->irq.irq, adev_to_drm(adev));
+		adev->irq.installed = false;
+		if (adev->irq.msi_enabled)
+			pci_free_irq_vectors(adev->pdev);
+	}
+
+	gsgpu_ih_ring_fini(adev, &adev->irq.ih_soft);
+	gsgpu_ih_ring_fini(adev, &adev->irq.ih);
+	gsgpu_ih_ring_fini(adev, &adev->irq.ih1);
+	gsgpu_ih_ring_fini(adev, &adev->irq.ih2);
+}
+
 /**
- * gsgpu_irq_fini - shut down interrupt handling
+ * gsgpu_irq_fini_sw - shut down interrupt handling
  *
  * @adev: gsgpu device pointer
  *
@@ -253,19 +373,11 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
  * functionality, shuts down vblank, hotplug and reset interrupt handling,
  * turns off interrupts from all sources (all ASICs).
  */
-void gsgpu_irq_fini(struct gsgpu_device *adev)
+void gsgpu_irq_fini_sw(struct gsgpu_device *adev)
 {
 	unsigned i, j;
 
-	if (adev->irq.installed) {
-		drm_irq_uninstall(adev->ddev);
-		adev->irq.installed = false;
-		if (adev->irq.msi_enabled)
-			pci_disable_msi(adev->pdev);
-		cancel_work_sync(&adev->reset_work);
-	}
-
-	for (i = 0; i < GSGPU_IH_CLIENTID_MAX; ++i) {
+	for (i = 0; i < GSGPU_IRQ_CLIENTID_MAX; ++i) {
 		if (!adev->irq.client[i].sources)
 			continue;
 
@@ -277,11 +389,6 @@ void gsgpu_irq_fini(struct gsgpu_device *adev)
 
 			kfree(src->enabled_types);
 			src->enabled_types = NULL;
-			if (src->data) {
-				kfree(src->data);
-				kfree(src);
-				adev->irq.client[i].sources[j] = NULL;
-			}
 		}
 		kfree(adev->irq.client[i].sources);
 		adev->irq.client[i].sources = NULL;
@@ -305,7 +412,7 @@ int gsgpu_irq_add_id(struct gsgpu_device *adev,
 		      unsigned client_id, unsigned src_id,
 		      struct gsgpu_irq_src *source)
 {
-	if (client_id >= GSGPU_IH_CLIENTID_MAX)
+	if (client_id >= GSGPU_IRQ_CLIENTID_MAX)
 		return -EINVAL;
 
 	if (src_id >= GSGPU_MAX_IRQ_SRC_ID)
@@ -345,45 +452,70 @@ int gsgpu_irq_add_id(struct gsgpu_device *adev,
  * gsgpu_irq_dispatch - dispatch IRQ to IP blocks
  *
  * @adev: gsgpu device pointer
- * @entry: interrupt vector pointer
+ * @ih: interrupt ring instance
  *
  * Dispatches IRQ to IP blocks.
  */
 void gsgpu_irq_dispatch(struct gsgpu_device *adev,
-			 struct gsgpu_iv_entry *entry)
+			 struct gsgpu_ih_ring *ih)
 {
-	unsigned client_id = entry->client_id;
-	unsigned src_id = entry->src_id;
+	u32 ring_index = ih->rptr;
+	struct gsgpu_iv_entry entry;
+	unsigned client_id, src_id;
 	struct gsgpu_irq_src *src;
+	bool handled = false;
 	int r;
 
-	trace_gsgpu_iv(entry);
+	entry.ih = ih;
+	entry.iv_entry = (const uint32_t *)&ih->ring[ring_index];
+	gsgpu_ih_decode_iv(adev, &entry);
 
-	if (client_id >= GSGPU_IH_CLIENTID_MAX) {
+	trace_gsgpu_iv(ih - &adev->irq.ih, &entry);
+
+	client_id = entry.client_id;
+	src_id = entry.src_id;
+
+	if (client_id >= GSGPU_IRQ_CLIENTID_MAX) {
 		DRM_DEBUG("Invalid client_id in IV: %d\n", client_id);
-		return;
-	}
 
-	if (src_id >= GSGPU_MAX_IRQ_SRC_ID) {
+	} else	if (src_id >= GSGPU_MAX_IRQ_SRC_ID) {
 		DRM_DEBUG("Invalid src_id in IV: %d\n", src_id);
-		return;
-	}
 
-	if (!adev->irq.client[client_id].sources) {
+	} else if (!adev->irq.client[client_id].sources) {
 		DRM_DEBUG("Unregistered interrupt client_id: %d src_id: %d\n",
 			  client_id, src_id);
-		return;
-	}
 
-	src = adev->irq.client[client_id].sources[src_id];
-	if (!src) {
+	} else if ((src = adev->irq.client[client_id].sources[src_id])) {
+		r = src->funcs->process(adev, src, &entry);
+		if (r < 0)
+			DRM_ERROR("error processing interrupt (%d)\n", r);
+		else if (r)
+			handled = true;
+
+	} else {
 		DRM_DEBUG("Unhandled interrupt src_id: %d\n", src_id);
-		return;
 	}
 
-	r = src->funcs->process(adev, src, entry);
-	if (r)
-		DRM_ERROR("error processing interrupt (%d)\n", r);
+	if (gsgpu_ih_ts_after(ih->processed_timestamp, entry.timestamp))
+		ih->processed_timestamp = entry.timestamp;
+}
+
+/**
+ * gsgpu_irq_delegate - delegate IV to soft IH ring
+ *
+ * @adev: gsgpu device pointer
+ * @entry: IV entry
+ * @num_dw: size of IV
+ *
+ * Delegate the IV to the soft IH ring and schedule processing of it. Used
+ * if the hardware delegation to IH1 or IH2 doesn't work for some reason.
+ */
+void gsgpu_irq_delegate(struct gsgpu_device *adev,
+			 struct gsgpu_iv_entry *entry,
+			 unsigned int num_dw)
+{
+	gsgpu_ih_ring_write(&adev->irq.ih_soft, entry->iv_entry, num_dw);
+	schedule_work(&adev->irq.ih_soft_work);
 }
 
 /**
@@ -428,14 +560,14 @@ void gsgpu_irq_gpu_reset_resume_helper(struct gsgpu_device *adev)
 {
 	int i, j, k;
 
-	for (i = 0; i < GSGPU_IH_CLIENTID_MAX; ++i) {
+	for (i = 0; i < GSGPU_IRQ_CLIENTID_MAX; ++i) {
 		if (!adev->irq.client[i].sources)
 			continue;
 
 		for (j = 0; j < GSGPU_MAX_IRQ_SRC_ID; ++j) {
 			struct gsgpu_irq_src *src = adev->irq.client[i].sources[j];
 
-			if (!src)
+			if (!src || !src->funcs || !src->funcs->set)
 				continue;
 			for (k = 0; k < src->num_types; k++)
 				gsgpu_irq_update(adev, src, k);
@@ -458,7 +590,7 @@ void gsgpu_irq_gpu_reset_resume_helper(struct gsgpu_device *adev)
 int gsgpu_irq_get(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 		   unsigned type)
 {
-	if (!adev->ddev->irq_enabled)
+	if (!adev->irq.installed)
 		return -ENOENT;
 
 	if (type >= src->num_types)
@@ -488,13 +620,16 @@ int gsgpu_irq_get(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 int gsgpu_irq_put(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 		   unsigned type)
 {
-	if (!adev->ddev->irq_enabled)
+	if (!adev->irq.installed)
 		return -ENOENT;
 
 	if (type >= src->num_types)
 		return -EINVAL;
 
 	if (!src->enabled_types || !src->funcs->set)
+		return -EINVAL;
+
+	if (WARN_ON(!gsgpu_irq_enabled(adev, src, type)))
 		return -EINVAL;
 
 	if (atomic_dec_and_test(&src->enabled_types[type]))
@@ -519,7 +654,7 @@ int gsgpu_irq_put(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 bool gsgpu_irq_enabled(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 			unsigned type)
 {
-	if (!adev->ddev->irq_enabled)
+	if (!adev->irq.installed)
 		return false;
 
 	if (type >= src->num_types)

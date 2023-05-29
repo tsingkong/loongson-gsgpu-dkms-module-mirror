@@ -4,7 +4,7 @@
  */
 
 #include <linux/slab.h>
-#include <drm/drmP.h>
+#include <drm/drm.h>
 #include "gsgpu.h"
 #include "gsgpu_ih.h"
 #include "gsgpu_common.h"

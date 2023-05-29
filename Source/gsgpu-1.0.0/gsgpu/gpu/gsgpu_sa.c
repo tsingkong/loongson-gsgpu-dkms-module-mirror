@@ -41,7 +41,7 @@
  * If we are asked to block we wait on all the oldest fence of all
  * rings. We just wait for any of those fence to complete.
  */
-#include <drm/drmP.h>
+
 #include "gsgpu.h"
 
 static void gsgpu_sa_bo_remove_locked(struct gsgpu_sa_bo *sa_bo);
@@ -75,7 +75,7 @@ int gsgpu_sa_bo_manager_init(struct gsgpu_device *adev,
 }
 
 void gsgpu_sa_bo_manager_fini(struct gsgpu_device *adev,
-                              struct gsgpu_sa_manager *sa_manager)
+			       struct gsgpu_sa_manager *sa_manager)
 {
 	struct gsgpu_sa_bo *sa_bo, *tmp;
 
@@ -226,6 +226,8 @@ static bool gsgpu_sa_bo_next_hole(struct gsgpu_sa_manager *sa_manager,
 	for (i = 0; i < GSGPU_SA_NUM_FENCE_LISTS; ++i) {
 		struct gsgpu_sa_bo *sa_bo;
 
+		fences[i] = NULL;
+
 		if (list_empty(&sa_manager->flist[i]))
 			continue;
 
@@ -296,10 +298,8 @@ int gsgpu_sa_bo_new(struct gsgpu_sa_manager *sa_manager,
 
 	spin_lock(&sa_manager->wq.lock);
 	do {
-		for (i = 0; i < GSGPU_SA_NUM_FENCE_LISTS; ++i) {
-			fences[i] = NULL;
+		for (i = 0; i < GSGPU_SA_NUM_FENCE_LISTS; ++i)
 			tries[i] = 0;
-		}
 
 		do {
 			gsgpu_sa_bo_try_free(sa_manager);
@@ -388,7 +388,7 @@ void gsgpu_sa_bo_dump_debug_info(struct gsgpu_sa_manager *sa_manager,
 			   soffset, eoffset, eoffset - soffset);
 
 		if (i->fence)
-			seq_printf(m, " protected by 0x%08x on context %llu",
+			seq_printf(m, " protected by 0x%016llx on context %llu",
 				   i->fence->seqno, i->fence->context);
 
 		seq_printf(m, "\n");
