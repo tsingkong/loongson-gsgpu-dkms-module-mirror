@@ -16,4 +16,5 @@ export CONFIG_DRM_GSGPU_USERPTR=y
 subdir-ccflags-y += -DBUILD_AS_DKMS
 subdir-ccflags-y += -DCONFIG_DRM_GSGPU_USERPTR
 
-obj-m += gsgpu/lib/ scheduler/ gsgpu/gpu/ ttm/ 
+# obj-m += gsgpu/lib/ scheduler/ gsgpu/gpu/ ttm/ 
+obj-m += scheduler/ gsgpu/gpu/ ttm/ 

@@ -25,8 +25,13 @@
 
 FULL_LS_PATH=$(src)/..
 
-ccflags-y := -Iinclude/drm -I$(FULL_LS_PATH)/include/asic_reg \
-	-I$(FULL_LS_PATH)/include \
+FULL_BRIDGE_PATH = $(FULL_LS_PATH)/bridge
+
+ccflags-y := -I$(FULL_LS_PATH)/include \
+    -I$(FULL_LS_PATH)/../include \
+    -I$(FULL_LS_PATH)/../include/drm \
+    -I$(FULL_LS_PATH)/../include/uapi \
+	-I$(FULL_BRIDGE_PATH)/
 
 CFLAGS_gsgpu_fence.o += -O
 gsgpu-y := gsgpu_drv.o
@@ -58,13 +63,13 @@ gsgpu-y += gsgpu_zip.o
 # add IH block
 gsgpu-y += \
 	gsgpu_irq.o \
-	gsgpu_ih.o \
+	gsgpu_ih.o
 
 # add GFX block
 gsgpu-y += gsgpu_gfx.o
 
-# add async DMA block
-gsgpu-y += gsgpu_xdma.o 
+# add XDMA block
+gsgpu-y += gsgpu_xdma.o
 
 # GPU scheduler
 gsgpu-y += gsgpu_job.o
@@ -78,6 +83,8 @@ gsgpu-y += gsgpu_dc_drv.o gsgpu_dc_crtc.o gsgpu_dc_hdmi.o \
 	  gsgpu_dc_encoder.o gsgpu_dc_i2c.o  gsgpu_dc_cursor.o \
 	  gsgpu_dc_vbios.o
 
-include $(FULL_LS_PATH)/backport/Makefile
+RELATIVE_GSGPU_BRIDGE_PATH = ../bridge
+include $(FULL_BRIDGE_PATH)/Makefile
+gsgpu-y += $(GSGPU_BRIDGE_FILES)
 
 obj-$(CONFIG_DRM_GSGPU)+= gsgpu.o

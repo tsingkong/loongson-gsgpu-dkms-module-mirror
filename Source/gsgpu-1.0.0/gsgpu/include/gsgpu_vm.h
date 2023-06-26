@@ -321,7 +321,6 @@ struct gsgpu_vm {
 struct gsgpu_vm_manager {
 	/* Handling of VMIDs */
 	struct gsgpu_vmid_mgr			id_mgr;
-	unsigned int				first_kfd_vmid;
 	bool					concurrent_flush;
 
 	/* Handling of VM fences */

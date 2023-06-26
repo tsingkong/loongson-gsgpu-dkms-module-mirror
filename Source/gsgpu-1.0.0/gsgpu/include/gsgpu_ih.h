@@ -142,7 +142,7 @@ struct gsgpu_ih_funcs {
 };
 
 #define gsgpu_ih_get_wptr(adev, ih) (adev)->irq.ih_funcs->get_wptr((adev), (ih))
-#define gsgpu_ih_decode_iv(adev, iv) \
+#define gsgpu_ih_decode_iv(adev, ih, iv) \
 	(adev)->irq.ih_funcs->decode_iv((adev), (ih), (iv))
 #define gsgpu_ih_decode_iv_ts(adev, ih, rptr, offset) \
 	(WARN_ON_ONCE(!(adev)->irq.ih_funcs->decode_iv_ts) ? 0 : \

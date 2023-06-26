@@ -1146,6 +1146,25 @@ struct drm_gsgpu_info_num_handles {
 	__u32  uvd_used_handles;
 };
 
+#define GSGPU_VCE_CLOCK_TABLE_ENTRIES		6
+
+struct drm_gsgpu_info_vce_clock_table_entry {
+	/** System clock */
+	__u32 sclk;
+	/** Memory clock */
+	__u32 mclk;
+	/** VCE clock */
+	__u32 eclk;
+	__u32 pad;
+};
+
+struct drm_gsgpu_info_vce_clock_table {
+	struct drm_gsgpu_info_vce_clock_table_entry entries[GSGPU_VCE_CLOCK_TABLE_ENTRIES];
+	__u32 num_valid_entries;
+	__u32 pad;
+};
+
+
 #define       GSGPU_HW_SEMA_GET         1
 #define       GSGPU_HW_SEMA_PUT         2
 

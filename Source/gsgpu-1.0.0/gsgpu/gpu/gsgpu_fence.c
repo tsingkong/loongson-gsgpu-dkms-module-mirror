@@ -181,6 +181,8 @@ int gsgpu_fence_emit(struct gsgpu_ring *ring, struct dma_fence **f, struct gsgpu
 				       adev->fence_context + ring->idx, seq);
 	}
 
+	DRM_INFO("gsgpu_ring_emit_fence seqno:%lld\n", fence->seqno);
+
 	gsgpu_ring_emit_fence(ring, ring->fence_drv.gpu_addr,
 			       seq, flags | GSGPU_FENCE_FLAG_INT);
 	pm_runtime_get_noresume(adev_to_drm(adev)->dev);

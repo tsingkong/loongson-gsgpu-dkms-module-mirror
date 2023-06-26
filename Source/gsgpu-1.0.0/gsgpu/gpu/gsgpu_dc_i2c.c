@@ -11,6 +11,7 @@
 #include "gsgpu_dc_connector.h"
 #include "gsgpu_dc_crtc.h"
 #include "gsgpu_dc_i2c.h"
+#include "gsgpu_dc_encoder.h"
 #include "gsgpu_dc_hdmi.h"
 #include "gsgpu_dc_reg.h"
 
@@ -261,7 +262,8 @@ static const struct i2c_algorithm gsgpu_dc_i2c_algo = {
 	.functionality = gsgpu_dc_i2c_func,
 };
 
-static int gsgpu_dc_i2c_init(struct gsgpu_device *adev, uint32_t link_index)
+static int gsgpu_dc_i2c_init(struct gsgpu_device *adev,
+			     int i2c_addr, uint32_t link_index)
 {
 	struct gsgpu_dc_i2c *i2c;
 	struct i2c_client *ddc_client;
@@ -269,7 +271,7 @@ static int gsgpu_dc_i2c_init(struct gsgpu_device *adev, uint32_t link_index)
 	int value = 0;
 	const struct i2c_board_info ddc_info = {
 		.type = "ddc-dev",
-		.addr = DDC_ADDR,
+		.addr = i2c_addr,
 		.flags = I2C_CLASS_DDC,
 	};
 
@@ -331,7 +333,8 @@ out_free:
 	return ret;
 }
 
-static int gsgpu_dc_gpio_init(struct gsgpu_device *adev, uint32_t link_index)
+static int gsgpu_dc_gpio_init(struct gsgpu_device *adev,
+			      int i2c_addr, uint32_t link_index)
 {
 	struct gsgpu_dc_i2c *i2c;
 	struct i2c_client *ddc_client;
@@ -340,7 +343,7 @@ static int gsgpu_dc_gpio_init(struct gsgpu_device *adev, uint32_t link_index)
 	int value = 0;
 	const struct i2c_board_info ddc_info = {
 		.type = "ddc-dev",
-		.addr = DDC_ADDR,
+		.addr = i2c_addr,
 		.flags = I2C_CLASS_DDC,
 	};
 
@@ -410,18 +413,25 @@ out_free:
 int gsgpu_i2c_init(struct gsgpu_device *adev, uint32_t link_index)
 {
 	int ret;
+	int i2c_addr;
+	struct gsgpu_link_info *link_info = &adev->dc->link_info[link_index];
 
-	if (adev->chip_revision != 2) {
-		ret = gsgpu_dc_i2c_init(adev, link_index);
+	i2c_addr = link_info->encoder->resource->chip_addr;
+	if (i2c_addr == 0 || i2c_addr == 0xff)
+		i2c_addr = DDC_ADDR;
+
+	if (adev->dc_revision != 2 && adev->dc_revision != 0x10) {
+		ret = gsgpu_dc_i2c_init(adev, i2c_addr, link_index);
 		if (ret)
 			return ret;
-		DRM_INFO("GSGPU DC init i2c %d finish\n", link_index);
+		DRM_INFO("GSGPU DC init i2c %d addr 0x%x finish\n",
+			 link_index, i2c_addr);
 	} else {
-		ret = gsgpu_dc_gpio_init(adev, link_index);
+		ret = gsgpu_dc_gpio_init(adev, i2c_addr, link_index);
 		if (ret)
 			return ret;
-		DRM_INFO("GSGPU DC init gpio %d finish\n", link_index);
+		DRM_INFO("GSGPU DC init gpio %d addr 0x%x finish\n",
+			 link_index, i2c_addr);
 	}
-
 	return 0;
 }

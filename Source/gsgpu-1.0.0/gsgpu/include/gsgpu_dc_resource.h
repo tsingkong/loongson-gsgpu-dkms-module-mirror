@@ -142,7 +142,10 @@ enum vbios_encoder_object {
 	HDMI_IT66121 = 0X30,
 	HDMI_SIL9022 = 0X31,
 	HDMI_LT8618 = 0X32,
-	EDP_NCS8805 = 0X40
+	EDP_NCS8805 = 0X40,
+	EDP_LT9721 = 0X42,
+	EDP_LT6711 = 0X43,
+	LVDS_LT8619 = 0x50
 };
 
 enum vbios_hotplug {

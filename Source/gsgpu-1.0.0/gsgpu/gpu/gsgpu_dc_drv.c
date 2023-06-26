@@ -22,6 +22,7 @@
 #include "gsgpu_dc_vbios.h"
 #include "gsgpu_dc_reg.h"
 #include "gsgpu_dc_hdmi.h"
+#include "bridge_phy.h"
 
 static const struct gsgpu_display_funcs dc_display_funcs = {
 	.vblank_get_counter = dc_vblank_get_counter,
@@ -78,6 +79,8 @@ static bool dc_links_init(struct gsgpu_dc *dc)
 	if (IS_ERR_OR_NULL(link_info))
 		return false;
 
+	dc->link_info = link_info;
+
 	for (i = 0; i < links; i++) {
 		crtc_resource = dc_get_vbios_resource(dc->vbios, i, GSGPU_RESOURCE_CRTC);
 		link_info[i].crtc = dc_crtc_construct(dc, crtc_resource);
@@ -93,7 +96,14 @@ static bool dc_links_init(struct gsgpu_dc *dc)
 			continue;
 		}
 
-		connector_resource = dc_get_vbios_resource(dc->vbios, i, GSGPU_RESOURCE_CONNECTOR);
+		connector_resource = dc_get_vbios_resource(dc->vbios,
+						i, GSGPU_RESOURCE_CONNECTOR);
+		link_info[i].bridge = dc_bridge_construct(dc,
+					encoder_resource, connector_resource);
+		if (!link_info[i].bridge) {
+			DRM_ERROR("link-%d bridge construct failed\n", i);
+			continue;
+		}
 		link_info[i].connector = dc_connector_construct(dc, connector_resource);
 		if (!link_info[i].connector) {
 			DRM_ERROR("link-%d  encoder construct failed \n", i);
@@ -103,8 +113,6 @@ static bool dc_links_init(struct gsgpu_dc *dc)
 		link_info[i].fine = true;
 		dc->links++;
 	}
-
-	dc->link_info = link_info;
 
 	return true;
 }
@@ -165,7 +173,7 @@ static struct gsgpu_dc *dc_construct(struct gsgpu_device *adev)
 	return dc;
 }
 
-void dc_destruct(struct gsgpu_dc *dc)
+static void dc_destruct(struct gsgpu_dc *dc)
 {
 	if (IS_ERR_OR_NULL(dc))
 		return;
@@ -174,7 +182,7 @@ void dc_destruct(struct gsgpu_dc *dc)
 	dc_vbios_exit(dc->vbios);
 
 	kfree(dc);
-	dc=NULL;
+	dc = NULL;
 }
 
 bool dc_submit_timing_update(struct gsgpu_dc *dc, u32 link, struct dc_timing_info *timing)
@@ -354,7 +362,7 @@ int gsgpu_dc_atomic_commit(struct drm_device *dev,
 static const struct drm_mode_config_funcs gsgpu_dc_mode_funcs = {
 	.fb_create = gsgpu_display_user_framebuffer_create,
 	.output_poll_changed = drm_fb_helper_output_poll_changed,
-        .atomic_check = drm_atomic_helper_check,
+    .atomic_check = drm_atomic_helper_check,
 	.atomic_commit = gsgpu_dc_atomic_commit,
 };
 
@@ -405,7 +413,9 @@ static void gsgpu_dc_do_flip(struct drm_crtc *crtc,
 	struct gsgpu_crtc *acrtc = to_gsgpu_crtc(crtc);
 	struct gsgpu_framebuffer *afb = to_gsgpu_framebuffer(fb);
 	struct gsgpu_bo *abo = gem_to_gsgpu_bo(fb->obj[0]);
+	struct gsgpu_bo_user *ubo = to_gsgpu_bo_user(abo);
 	struct gsgpu_device *adev = drm_to_adev(crtc->dev);
+	uint64_t crtc_array_mode, crtc_address;
 
 	/* Prepare wait for target vblank early - before the fence-waits */
 	target_vblank = target - (uint32_t)drm_crtc_vblank_count(crtc) +
@@ -452,9 +462,20 @@ static void gsgpu_dc_do_flip(struct drm_crtc *crtc,
 
 	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
 
+	crtc_array_mode = GSGPU_TILING_GET(ubo->tiling_flags, ARRAY_MODE);
+	switch (crtc_array_mode) {
+	case 0:
+		crtc_address = afb->address + crtc->y * afb->base.pitches[0] + ALIGN(crtc->x, 8) * 4;
+		break;
+	case 2:
+		crtc_address = afb->address + crtc->y * afb->base.pitches[0] + ALIGN(crtc->x, 8) * 4 * 4;
+		break;
+	}
+
 	plane.type = DC_PLANE_PRIMARY;
-	plane.primary.address.low_part = lower_32_bits(afb->address);
-	plane.primary.address.high_part= upper_32_bits(afb->address);
+	plane.primary.address.low_part = lower_32_bits(crtc_address);
+	plane.primary.address.high_part = upper_32_bits(crtc_address);
+
 	dc_submit_plane_update(adev->dc, acrtc->crtc_id, &plane);
 
 	DRM_DEBUG_DRIVER("%s Flipping to hi: 0x%x, low: 0x%x \n",
@@ -501,7 +522,8 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 		if (!new_crtc_state->active) {
 			dc_crtc_enable(acrtc, false);
 			continue;
-		}
+		} else
+			dc_crtc_enable(acrtc, true);
 
 		x = plane->state->crtc->x;
 		y = plane->state->crtc->y;
@@ -540,6 +562,7 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 		struct dc_timing_info timing;
 		struct dc_plane_update plane;
 		struct drm_display_mode *mode = &pcrtc->mode;
+		uint64_t address;
 
 		struct gsgpu_framebuffer *afb =
 				to_gsgpu_framebuffer(modeset_fbs[0]);
@@ -574,6 +597,10 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 		timing.vtotal = mode->vtotal;
 		timing.vsync_start = mode->vsync_start;
 		timing.vsync_end = mode->vsync_end;
+		timing.use_dma32 = 0;
+
+		if (x != 0 && x % 64 && dc_crtc->array_mode == 0)
+			timing.use_dma32 = 1;
 
 		dc_submit_timing_update(adev->dc, acrtc->crtc_id, &timing);
 
@@ -584,16 +611,17 @@ static void gsgpu_dc_commit_planes(struct drm_atomic_state *state,
 		plane.type = DC_PLANE_PRIMARY;
 		switch (dc_crtc->array_mode) {
 		case 0:
-			afb->address = afb->address + y * timing.stride + ALIGN(x, 8) * cpp;
+			address = afb->address + y * timing.stride + ALIGN(x, 8) * cpp;
 			break;
 		case 2:
 			y = (y + 3) & ~3;
-			afb->address = afb->address + y * timing.stride + x * cpp * 4;
+			x = ALIGN(x, 8);
+			address = afb->address + y * timing.stride + x * cpp * 4;
 			break;
 		}
 
-		plane.primary.address.low_part = lower_32_bits(afb->address);
-		plane.primary.address.high_part = upper_32_bits(afb->address);
+		plane.primary.address.low_part = lower_32_bits(address);
+		plane.primary.address.high_part = upper_32_bits(address);
 		dc_submit_plane_update(adev->dc, acrtc->crtc_id, &plane);
 	}
 }
@@ -749,7 +777,7 @@ static void gsgpu_display_print_display_setup(struct drm_device *dev)
 	struct drm_encoder *encoder;
 	struct gsgpu_encoder *gsgpu_encoder;
 
-	DRM_INFO("GSGPU 7A DC revision %d\n", adev->chip_revision);
+	DRM_DEBUG_DRIVER("GSGPU DC revision %d\n", adev->dc_revision);
 	DRM_INFO("GSGPU Display Crtcs\n");
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
 		gsgpu_crtc = to_gsgpu_crtc(crtc);
@@ -799,6 +827,11 @@ static int dc_initialize_drm_device(struct gsgpu_device *adev)
 		gsgpu_i2c_init(adev, i);
 		if (gsgpu_dc_encoder_init(adev, i)) {
 			DRM_ERROR("KMS: Failed to initialize encoder\n");
+			goto fail;
+		}
+
+		if (gsgpu_dc_bridge_init(adev, i)) {
+			DRM_ERROR("KMS: Failed to initialize bridge\n");
 			goto fail;
 		}
 
@@ -875,7 +908,7 @@ static int dc_sw_init(void *handle)
 	}
 
 	DRM_INFO("GSGPU DC construct links:%d", adev->dc->links);
-	DRM_INFO("GSGPU DC sw init success!\n");
+	DRM_DEBUG_DRIVER("GSGPU DC sw init success!\n");
 
 	return 0;
 
@@ -914,10 +947,12 @@ static int dc_hw_init(void *handle)
 	}
 
 	drm_mode_config_reset(adev_to_drm(adev));
+	drm_kms_helper_poll_init(adev_to_drm(adev));
 	gsgpu_dc_meta_set(adev);
 	gsgpu_dc_hpd_init(adev);
 
-	DRM_INFO("GSGPU DC hw init success!\n");
+	DRM_DEBUG_DRIVER("GSGPU DC hw init success!\n");
+	
 	return 0;
 error:
 	gsgpu_dc_fini(adev);

@@ -132,6 +132,10 @@ int gsgpu_driver_load_kms(struct gsgpu_device *adev, unsigned long flags)
 
 	dev = adev_to_drm(adev);
 
+	if ((gsgpu_runtime_pm != 0) &&
+	    ((flags & GSGPU_IS_APU) == 0))
+		flags |= GSGPU_IS_PX;
+
 	/* gsgpu_device_init should report only fatal error
 	 * like memory allocation failure or iomapping failure,
 	 * or memory manager initialization failure, it must
@@ -351,7 +355,6 @@ int gsgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	uint32_t ui32 = 0;
 	uint64_t ui64 = 0;
 	int i, found;
-	// int ui32_size = sizeof(ui32);
 
 	if (!info->return_size || !info->return_pointer)
 		return -EINVAL;

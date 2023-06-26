@@ -194,10 +194,6 @@ struct gsgpu_gfx {
 	struct gsgpu_cu_info		cu_info;
 	const struct gsgpu_gfx_funcs	*funcs;
 
-	/* reset mask */
-	uint32_t                        grbm_soft_reset;
-	uint32_t                        srbm_soft_reset;
-
 	/* gfx off */
 	bool                            gfx_off_state;      /* true: enabled, false: disabled */
 	struct mutex                    gfx_off_mutex;      /* mutex to change gfxoff state */

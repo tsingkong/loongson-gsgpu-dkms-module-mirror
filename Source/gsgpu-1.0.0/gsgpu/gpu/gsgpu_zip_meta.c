@@ -25,7 +25,7 @@ int gsgpu_zip_meta_vram_alloc(struct gsgpu_device *adev)
 
 	if (adev->zip_meta.robj)
 		return 0;
-		
+
 	memset(&bp, 0, sizeof(bp));
 	bp.size = adev->zip_meta.table_size;
 	bp.byte_align = GSGPU_GEM_COMPRESSED_SIZE;
@@ -34,8 +34,9 @@ int gsgpu_zip_meta_vram_alloc(struct gsgpu_device *adev)
 		GSGPU_GEM_CREATE_VRAM_CONTIGUOUS;
 	bp.type = ttm_bo_type_kernel;
 	bp.resv = NULL;
+	bp.bo_ptr_size = sizeof(struct gsgpu_bo);
 	r = gsgpu_bo_create(adev, &bp, &adev->zip_meta.robj);
-	
+
 	if (r) {
 		return r;
 	}

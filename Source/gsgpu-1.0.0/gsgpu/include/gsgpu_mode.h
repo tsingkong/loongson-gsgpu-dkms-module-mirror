@@ -325,6 +325,7 @@ struct gsgpu_encoder {
 	struct drm_encoder base;
 	uint32_t encoder_enum;
 	uint32_t encoder_id;
+	struct gsgpu_bridge_phy *bridge;
 	uint32_t devices;
 	uint32_t active_device;
 	uint32_t flags;

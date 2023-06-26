@@ -254,6 +254,8 @@ static struct dma_fence *gsgpu_job_run(struct drm_sched_job *sched_job)
 				       &fence);
 		if (r)
 			DRM_ERROR("Error scheduling IBs (%d)\n", r);
+		else
+			DRM_INFO("Success scheduling IBs (drm_sched_job:%p)\n", sched_job);
 	}
 
 	job->job_run_counter++;

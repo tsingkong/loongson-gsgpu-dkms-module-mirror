@@ -25,7 +25,7 @@
 
 #include "gsgpu.h"
 #include "gsgpu_ih.h"
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 /*
  * Interrupts
@@ -160,7 +160,7 @@ static void ih_func_decode_iv(struct gsgpu_device *adev,
 			    struct gsgpu_iv_entry *entry)
 {
 	/* wptr/rptr are in bytes! */
-	u32 ring_index = adev->irq.ih.rptr;
+	u32 ring_index = ih->rptr;
 	uint32_t dw[4];
 
 	dw[0] = le32_to_cpu(ih->ring[ring_index + 0]);
@@ -179,7 +179,7 @@ static void ih_func_decode_iv(struct gsgpu_device *adev,
 	entry->src_data[1] = dw[3];
 
 	/* wptr/rptr are in bytes! */
-	adev->irq.ih.rptr += 4;
+	ih->rptr += 4;
 }
 
 /**

@@ -30,8 +30,7 @@
 #include "gsgpu_gfx.h"
 #include "gsgpu_common.h"
 #include "gsgpu_cp.h"
-
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 #define GFX8_NUM_GFX_RINGS     1
 
@@ -107,19 +106,23 @@ static int gfx_ring_test_ib(struct gsgpu_ring *ring, long timeout)
 	uint64_t gpu_addr;
 	uint32_t tmp;
 	long r;
+	DRM_INFO("gfx_ring_test_ib enter ...\n");
 
 	r = gsgpu_device_wb_get(adev, &index);
-	if (r)
+	if (r) {
+		dev_err(adev->dev, "(%ld) failed to allocate wb slot\n", r);
 		return r;
+	}
 
 	gpu_addr = adev->wb.gpu_addr + (index * 4);
 	adev->wb.wb[index] = cpu_to_le32(0xCAFEDEAD);
 	memset(&ib, 0, sizeof(ib));
 	r = gsgpu_ib_get(adev, NULL, 16,
 					GSGPU_IB_POOL_DIRECT, &ib);
-	if (r)
+	if (r) {
+		DRM_ERROR("gsgpu: failed to get ib (%ld).\n", r);
 		goto err1;
-
+	}
 	ib.ptr[0] = GSPKT(GSPKT_WRITE, 3) | WRITE_DST_SEL(1) | WRITE_WAIT;
 	ib.ptr[1] = lower_32_bits(gpu_addr);
 	ib.ptr[2] = upper_32_bits(gpu_addr);
@@ -127,22 +130,29 @@ static int gfx_ring_test_ib(struct gsgpu_ring *ring, long timeout)
 	ib.length_dw = 4;
 
 	r = gsgpu_ib_schedule(ring, 1, &ib, NULL, &f);
-	if (r)
+	if (r) {
+		DRM_INFO("gsgpu_ib_schedule failed with %ld\n", r);
 		goto err2;
+	}
 
 	r = dma_fence_wait_timeout(f, false, timeout);
 	if (r == 0) {
+		DRM_ERROR("gsgpu: IB test timed out.\n");
 		r = -ETIMEDOUT;
 		goto err2;
 	} else if (r < 0) {
+		DRM_ERROR("gsgpu: fence wait failed (%ld).\n", r);
 		goto err2;
 	}
 
 	tmp = adev->wb.wb[index];
-	if (tmp == 0xDEADBEEF)
+	if (tmp == 0xDEADBEEF) {
+		DRM_DEBUG("ib test on ring %d succeeded\n", ring->idx);
 		r = 0;
-	else
+	} else {
+		DRM_ERROR("ib test on ring %d failed\n", ring->idx);
 		r = -EINVAL;
+	}
 
 err2:
 	gsgpu_ib_free(adev, &ib, NULL);
@@ -212,18 +222,18 @@ static int gfx_sw_init(void *handle)
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
 	/* EOP Event */
-	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, GSGPU_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
 	if (r)
 		return r;
 
 	/* Privileged reg */
-	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_REG_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, GSGPU_SRCID_CP_PRIV_REG_FAULT,
 			      &adev->gfx.priv_reg_irq);
 	if (r)
 		return r;
 
 	/* Privileged inst */
-	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_INSTR_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, GSGPU_SRCID_CP_PRIV_INSTR_FAULT,
 			      &adev->gfx.priv_inst_irq);
 	if (r)
 		return r;
@@ -475,6 +485,7 @@ static void gfx_ring_set_wptr_gfx(struct gsgpu_ring *ring)
 {
 	struct gsgpu_device *adev = ring->adev;
 
+	DRM_INFO("gfx_ring_set_wptr_gfx 0x%llx\n", ring->wptr);
 	WREG32(GSGPU_GFX_CB_WPTR_OFFSET, lower_32_bits(ring->wptr));
 }
 

@@ -31,6 +31,15 @@
 #define GSGPU_MAX_IRQ_SRC_ID		0x100
 #define GSGPU_MAX_IRQ_CLIENT_ID	0x100
 
+/* TODO irq srcid need rewrite*/
+#define GSGPU_SRCID_GFX_PAGE_INV_FAULT                 0x00000092  /* 146 */
+#define GSGPU_SRCID_GFX_MEM_PROT_FAULT                 0x00000093  /* 147 */
+#define GSGPU_SRCID_CP_END_OF_PIPE                     0x000000b5  /* 181 */
+#define GSGPU_SRCID_CP_PRIV_REG_FAULT                  0x000000b8  /* 184 */
+#define GSGPU_SRCID_CP_PRIV_INSTR_FAULT                0x000000b9  /* 185 */
+#define GSGPU_SRCID_XDMA_TRAP          	               0x000000e0  /* 224 */
+#define GSGPU_SRCID_XDMA_SRBM_WRITE                    0x000000f7  /* 247 */
+
 #define GSGPU_IRQ_CLIENTID_LEGACY	0
 #define GSGPU_IRQ_CLIENTID_MAX		SOC15_IH_CLIENTID_MAX
 

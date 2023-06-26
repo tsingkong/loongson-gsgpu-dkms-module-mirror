@@ -138,6 +138,7 @@ static bool dc_i2c_int_enable(struct gsgpu_dc_crtc *crtc, bool enable)
 static bool dc_hpd_enable(struct gsgpu_dc_crtc *crtc, bool enable)
 {
 	struct gsgpu_device *adev = crtc->dc->adev;
+	struct gsgpu_connector *lconnector;
 	u32 link;
 	u32 int_reg;
 	u32 vga_cfg;
@@ -148,19 +149,34 @@ static bool dc_hpd_enable(struct gsgpu_dc_crtc *crtc, bool enable)
 	link = crtc->resource->base.link;
 	if (link >= DC_DVO_MAXLINK)
 		return false;
+	lconnector = adev->mode_info.connectors[link];
 
 	int_reg = dc_readl(adev, DC_INT_REG);
+	vga_cfg = dc_readl(adev, DC_VGA_HOTPULG_CFG);
+
 	switch (link) {
 	case 0:
-		if (enable)
-			int_reg |= DC_INT_VGA_HOTPLUG_EN | DC_INT_HDMI0_HOTPLUG_EN;
-		else {
+		if (enable) {
+			if (lconnector->base.polled == DRM_CONNECTOR_POLL_HPD) {
+				int_reg |= DC_INT_VGA_HOTPLUG_EN;
+				vga_cfg &= ~0x3;
+				vga_cfg |= 0x1;
+			} else {
+				int_reg &= ~DC_INT_VGA_HOTPLUG_EN;
+				vga_cfg = 0;
+			}
+			if (lconnector->base.polled)
+				int_reg |= DC_INT_HDMI0_HOTPLUG_EN;
+			else
+				int_reg &= ~DC_INT_HDMI0_HOTPLUG_EN;
+		} else {
+			vga_cfg &= ~0x3;
 			int_reg &= ~DC_INT_HDMI0_HOTPLUG_EN;
 			int_reg &= ~DC_INT_VGA_HOTPLUG_EN;
 		}
 		break;
 	case 1:
-		if (enable)
+		if (enable && lconnector->base.polled)
 			int_reg |= DC_INT_HDMI1_HOTPLUG_EN;
 		else
 			int_reg &= ~DC_INT_HDMI1_HOTPLUG_EN;
@@ -168,19 +184,8 @@ static bool dc_hpd_enable(struct gsgpu_dc_crtc *crtc, bool enable)
 	default:
 		return false;
 	}
+
 	dc_writel(adev, DC_INT_REG, int_reg);
-
-	vga_cfg = dc_readl(adev, DC_VGA_HOTPULG_CFG);
-	if (enable) {
-		if (!vga_cfg)
-			vga_cfg = 0x6409;
-		else {
-			vga_cfg &= ~0x3;
-			vga_cfg |= 0x1;
-		}
-	} else
-		vga_cfg = 0;
-
 	dc_writel(adev, DC_VGA_HOTPULG_CFG, vga_cfg);
 
 	return true;
@@ -654,11 +659,11 @@ static inline int dc_irq_state(struct gsgpu_device *adev,
 	if (acrtc->crtc_id == -1)
 		return 0;
 
-	irq_source = dc_irq_type + acrtc->crtc_id;
+	irq_source = dc_irq_type + crtc_id;
 	st = (state == GSGPU_IRQ_STATE_ENABLE);
 
-	DRM_INFO("dc irq state crtc_id:%d, irq_src:%d, st:%d\n",
-		 crtc_id, irq_source, st);
+	DRM_DEBUG_DRIVER("dc irq state crtc_id:%d, irq_src:%d, st:%d\n",
+			 crtc_id, irq_source, st);
 	dc_interrupt_enable(adev->dc, irq_source, st);
 
 	return 0;
@@ -751,6 +756,14 @@ bool dc_interrupt_enable(struct gsgpu_dc *dc, enum dc_irq_source src, bool enabl
 		if (dc->link_info)
 			ret = dc_hpd_enable(dc->link_info[1].crtc, enable);
 		break;
+	case DC_IRQ_SOURCE_HPD_HDMI0_NULL:
+		if (dc->link_info)
+			ret = dc_hpd_enable(dc->link_info[0].crtc, false);
+		break;
+	case DC_IRQ_SOURCE_HPD_HDMI1_NULL:
+		if (dc->link_info)
+			ret = dc_hpd_enable(dc->link_info[1].crtc, false);
+		break;
 	default:
 		DRM_ERROR("%s Can not support this irq %d \n", __func__, src);
 		break;
@@ -781,12 +794,14 @@ void gsgpu_dc_hpd_disable(struct gsgpu_device *adev)
 	struct drm_connector *connector;
 	struct gsgpu_connector *aconnector;
 
-	list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
-		aconnector = to_gsgpu_connector(connector);
-		dc_interrupt_enable(adev->dc, aconnector->irq_source_hpd, false);
-	}
-
-	adev->vga_hpd_status = connector_status_unknown;
+	if (adev->chip == dev_7a2000) {
+		list_for_each_entry(connector, &dev->mode_config.connector_list, head) {
+			aconnector = to_gsgpu_connector(connector);
+			dc_interrupt_enable(adev->dc, aconnector->irq_source_hpd, false);
+		}
+		adev->vga_hpd_status = connector_status_unknown;
+	} else if (adev->chip == dev_2k2000)
+		return;
 
 	return;
 }

@@ -128,6 +128,7 @@ extern int gsgpu_moverate;
 extern int gsgpu_disp_priority;
 extern int gsgpu_msi;
 extern char gsgpu_lockup_timeout[GSGPU_MAX_TIMEOUT_PARAM_LENGTH];
+extern int gsgpu_runtime_pm;
 extern int gsgpu_vm_size;
 extern int gsgpu_vm_block_size;
 extern int gsgpu_vm_fault_stop;
@@ -187,6 +188,11 @@ struct gsgpu_bo_va_mapping;
 struct kfd_vm_fault_info;
 struct gsgpu_reset_context;
 struct gsgpu_reset_control;
+
+enum gsgpu_chip {
+	dev_7a2000,
+	dev_2k2000
+};
 
 enum gsgpu_cp_irq {
 	GSGPU_CP_IRQ_GFX_ME0_PIPE0_EOP = 0,
@@ -682,7 +688,8 @@ struct gsgpu_device {
 	struct drm_device		ddev;
 
 	struct pci_dev			*loongson_dc;
-	u8 chip_revision;
+	u8				dc_revision;
+	u8				chip;
 
 	/* ASIC */
 	enum gsgpu_family_type		family_type;
@@ -720,6 +727,7 @@ struct gsgpu_device {
 	resource_size_t			loongson_dc_rmmio_base;
 	resource_size_t			loongson_dc_rmmio_size;
 	void __iomem			*loongson_dc_rmmio;
+	void __iomem			*io_base;
 
 	/* protects concurrent MM_INDEX/DATA based register access */
 	spinlock_t mmio_idx_lock;

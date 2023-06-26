@@ -1748,7 +1748,7 @@ void gsgpu_vm_adjust_size(struct gsgpu_device *adev, uint32_t min_vm_size,
 
 	/* block size depends on vm size and hw setup*/
 	if (gsgpu_vm_block_size != -1)
-		adev->vm_manager.block_size = min((unsigned)gsgpu_vm_block_size, GSGPU_PAGE_PTE_SHIFT);
+		adev->vm_manager.block_size = min((unsigned)gsgpu_vm_block_size, (unsigned)GSGPU_PAGE_PTE_SHIFT);
 	else if (adev->vm_manager.num_level > 1)
 		adev->vm_manager.block_size = GSGPU_PAGE_PTE_SHIFT;
 	else

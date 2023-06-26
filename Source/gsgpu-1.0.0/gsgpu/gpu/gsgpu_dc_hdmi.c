@@ -12,14 +12,17 @@
 void hdmi_phy_pll_config(struct gsgpu_device *adev, int index, int clock)
 {
 	int val;
-	int count;
+	int count = 0;
+
+	if (adev->chip == dev_2k2000 && index == 1)
+		return;
 
 	dc_writel(adev, CURRENT_REG(DC_HDMI_PHY_PLLCFG_REG, index), 0x0);
-	dc_writel(adev, CURRENT_REG(DC_HDMI_PHY_CTRL_REG, index), 0x0);
+	dc_writel(adev, CURRENT_REG(DC_HDMI_PHY_CTRL_REG, index), 0xf02);
 
 	if (clock >= 170000)
 		val = (0x0 << 13) | (0x28 << 6) | (0x10 << 1) | (0 << 0);
-	else if (clock >= 85000  && clock < 170000) 
+	else if (clock >= 85000  && clock < 170000)
 		val = (0x1 << 13) | (0x28 << 6) | (0x8 << 1) | (0 << 0);
 	else if (clock >= 42500 && clock < 85000)
 		val = (0x2 << 13) | (0x28 << 6) | (0x4 << 1) | (0 << 0);
@@ -107,24 +110,6 @@ static int hdmi_set_avi_infoframe(struct drm_encoder *encoder,
 	return 0;
 }
 
-// static void hdmi_enable_avi_infoframe(struct gsgpu_device *adev)
-// {
-// 	u32 value;
-
-// 	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
-// 	value |= (1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
-// 	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
-// }
-
-// static void hdmi_disable_avi_infoframe(struct gsgpu_device *adev)
-// {
-// 	u32 value;
-
-// 	value = dc_readl(adev, DC_HDMI_AVI_CTRL_REG);
-// 	value &= ~(1 << 1)/*INFOFRAME_CTRL_ENABLE*/;
-// 	dc_writel(adev, value, DC_HDMI_AVI_CTRL_REG);
-// }
-
 void dc_hdmi_encoder_enable(struct drm_encoder *encoder)
 {
 	struct gsgpu_device *adev = drm_to_adev(encoder->dev);
@@ -147,8 +132,8 @@ void gsgpu_hdmi_suspend(struct gsgpu_device *adev)
 	u32 link = 0;
 
 	adev->dc->hdmi_ctrl_reg = dc_readl(adev, DC_HDMI_CTRL_REG);
-
 	for (link = 0; link < 2; link++) {
+		dc_crtc_enable(adev->mode_info.crtcs[link], false);
 		dc_writel(adev, DC_HDMI_CTRL_REG + (link * 0x10), 0);
 		dc_writel(adev, DC_HDMI_ZONEIDLE_REG + (link * 0x10), 0);
 	}
@@ -160,6 +145,7 @@ int gsgpu_hdmi_resume(struct gsgpu_device *adev)
 	u32 reg_val;
 
 	for (link = 0; link < 2; link++) {
+		dc_crtc_enable(adev->mode_info.crtcs[link], true);
 		dc_writel(adev, DC_HDMI_CTRL_REG + (link * 0x10), adev->dc->hdmi_ctrl_reg);
 		dc_writel(adev, DC_HDMI_ZONEIDLE_REG + (link * 0x10), 0x00400040);
 

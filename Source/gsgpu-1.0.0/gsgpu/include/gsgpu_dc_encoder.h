@@ -5,7 +5,7 @@
 struct gsgpu_dc_encoder {
 	struct encoder_resource *resource;
 	struct gsgpu_dc *dc;
-	int has_ext_encoder;
+	bool has_ext_encoder;
 };
 
 struct gsgpu_dc_encoder *dc_encoder_construct(struct gsgpu_dc *dc, struct encoder_resource *resource);

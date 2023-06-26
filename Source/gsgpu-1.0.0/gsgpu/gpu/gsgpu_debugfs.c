@@ -213,11 +213,6 @@ static ssize_t gsgpu_debugfs_gca_config_read(struct file *f, char __user *buf,
  * @buf: User buffer to store read data in
  * @size: Number of bytes to read
  * @pos:  Offset to seek to
- *
- * The offset is treated as the BYTE address of one of the sensors
- * enumerated in amd/include/kgd_pp_interface.h under the
- * 'gsgpu_pp_sensors' enumeration.  For instance to read the UVD VCLK
- * you would use the offset 3 * 4 = 12.
  */
 static ssize_t gsgpu_debugfs_sensor_read(struct file *f, char __user *buf,
 					size_t size, loff_t *pos)

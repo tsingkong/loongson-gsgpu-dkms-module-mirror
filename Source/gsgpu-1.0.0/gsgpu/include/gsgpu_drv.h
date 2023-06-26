@@ -33,9 +33,6 @@
 
 #include "gsgpu_shared.h"
 
-/* General customization:
- */
-
 #define DRIVER_AUTHOR		"Loongson graphics driver team"
 
 #define DRIVER_NAME		"gsgpu"

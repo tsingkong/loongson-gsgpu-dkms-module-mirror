@@ -42,6 +42,7 @@
 
 #include "gsgpu.h"
 #include "gsgpu_irq.h"
+#include "gsgpu_dc_vbios.h"
 #include "gsgpu_dma_buf.h"
 #include "gsgpu_sched.h"
 #include "gsgpu_gem.h"
@@ -119,6 +120,7 @@ int gsgpu_moverate = -1; /* auto */
 int gsgpu_disp_priority;
 int gsgpu_msi = -1;
 char gsgpu_lockup_timeout[GSGPU_MAX_TIMEOUT_PARAM_LENGTH];
+int gsgpu_runtime_pm = -1;
 int gsgpu_vm_size = -1;
 int gsgpu_vm_block_size = -1;
 int gsgpu_vm_fault_stop;
@@ -238,6 +240,14 @@ MODULE_PARM_DESC(lockup_timeout, "GPU lockup timeout in ms (default: for bare me
 module_param_string(lockup_timeout, gsgpu_lockup_timeout, sizeof(gsgpu_lockup_timeout), 0444);
 
 /**
+ * DOC: runpm (int)
+ * Override for runtime power management control for dGPUs in PX/HG laptops. The gsgpu driver can dynamically power down
+ * the dGPU on PX/HG laptops when it is idle. The default is -1 (auto enable). Setting the value to 0 disables this functionality.
+ */
+MODULE_PARM_DESC(runpm, "PX runtime pm (1 = force enable, 0 = disable, -1 = PX only default)");
+module_param_named(runpm, gsgpu_runtime_pm, int, 0444);
+
+/**
  * DOC: vm_size (int)
  * Override the size of the GPU's per client virtual address space in GiB.  The default is -1 (automatic for each asic).
  */
@@ -317,35 +327,13 @@ module_param_named(noretry, gsgpu_noretry, int, 0644);
 
 
 static const struct pci_device_id pciidlist[] = {
-	{0x0014, 0x7A25, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_LG100}, //GSGPU
+	{PCI_VENDOR_ID_LOONGSON, 0x7A25, PCI_ANY_ID, PCI_ANY_ID, 0, 0, CHIP_LG100}, //GSGPU
 	{0, 0, 0}
 };
 
 MODULE_DEVICE_TABLE(pci, pciidlist);
 
 static const struct drm_driver gsgpu_kms_driver;
-
-// static void gsgpu_get_secondary_funcs(struct gsgpu_device *adev)
-// {
-// 	struct pci_dev *p = NULL;
-// 	int i;
-
-// 	/* 0 - GPU
-// 	 * 1 - audio
-// 	 * 2 - USB
-// 	 * 3 - UCSI
-// 	 */
-// 	for (i = 1; i < 4; i++) {
-// 		p = pci_get_domain_bus_and_slot(pci_domain_nr(adev->pdev->bus),
-// 						adev->pdev->bus->number, i);
-// 		if (p) {
-// 			pm_runtime_get_sync(&p->dev);
-// 			pm_runtime_mark_last_busy(&p->dev);
-// 			pm_runtime_put_autosuspend(&p->dev);
-// 			pci_dev_put(p);
-// 		}
-// 	}
-// }
 
 static int gsgpu_pci_probe(struct pci_dev *pdev,
 			    const struct pci_device_id *ent)
@@ -360,9 +348,6 @@ static int gsgpu_pci_probe(struct pci_dev *pdev,
 			 "See modparam exp_hw_support\n");
 		return -ENODEV;
 	}
-
-	if (!gsgpu_lg100_support)
-		return -ENODEV;
 
 	adev = devm_drm_dev_alloc(&pdev->dev, &gsgpu_kms_driver, typeof(*adev), ddev);
 	if (IS_ERR(adev))
@@ -918,6 +903,7 @@ static struct pci_driver *loongson_dc_pdriver;
 static int __init gsgpu_init(void)
 {
 	struct pci_dev *pdev = NULL;
+	struct file *fw_file = NULL;
 	int r;
 
 	if (drm_firmware_drivers_only())
@@ -927,6 +913,21 @@ static int __init gsgpu_init(void)
 	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev))) {
 		if (pdev->vendor != PCI_VENDOR_ID_LOONGSON)
 			return 0;
+
+		if (!gsgpu_lg100_support || (pdev->device != 0x7a36))
+			return -EINVAL;
+
+		fw_file = filp_open("/usr/lib/firmware/loongson/lg100_cp.bin",
+				    O_RDONLY, 0600);
+		if (IS_ERR(fw_file))
+			return -EINVAL;
+
+		filp_close(fw_file, NULL);
+	}
+
+	if (!check_vbios_info()) {
+		DRM_INFO("gsgpu can not support this board!!!\n");
+		return -EINVAL;
 	}
 
 	r = gsgpu_sync_init();

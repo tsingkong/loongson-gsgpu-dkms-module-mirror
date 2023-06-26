@@ -28,9 +28,7 @@
 #include <drm/drm_cache.h>
 #include "gsgpu.h"
 #include "gsgpu_mmu.h"
-
-/* TODO irq srcid need rewrite*/
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 static void mmu_set_gmc_funcs(struct gsgpu_device *adev);
 static void mmu_set_irq_funcs(struct gsgpu_device *adev);
@@ -49,7 +47,10 @@ static void mmu_vram_gtt_location(struct gsgpu_device *adev,
 	/*TODO Use generic register to get vram base address*/
 
 	/*refrence from LS7A2000 page data*/
-	base = 0x1000000000000;
+	if (adev->chip == dev_7a2000)
+		base = 0x1000000000000;
+	else if (adev->chip == dev_2k2000)
+		base = adev->gmc.aper_base;
 
 	gsgpu_gmc_vram_location(adev, mc, base);
 	gsgpu_gmc_gart_location(adev, mc);
@@ -304,20 +305,6 @@ static void mmu_gart_disable(struct gsgpu_device *adev)
 	gsgpu_gart_table_vram_unpin(adev);
 }
 
-/**
- * mmu_vm_decode_fault - print human readable fault info
- *
- * @adev: gsgpu_device pointer
- * @status: VM_CONTEXT1_PROTECTION_FAULT_STATUS register value
- * @addr: VM_CONTEXT1_PROTECTION_FAULT_ADDR register value
- *
- * Print human readable fault information ().
- */
-// static void mmu_vm_decode_fault(struct gsgpu_device *adev, u32 status,
-// 				     u32 addr, u32 mc_client, unsigned pasid)
-// {
-// }
-
 static int mmu_early_init(void *handle)
 {
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
@@ -349,11 +336,11 @@ static inline int mmu_irq_set(struct gsgpu_device *adev)
 {
 	int r;
 
-	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_GFX_PAGE_INV_FAULT, &adev->gmc.vm_fault);
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, GSGPU_SRCID_GFX_PAGE_INV_FAULT, &adev->gmc.vm_fault);
 	if (r)
 		return r;
 
-	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_GFX_MEM_PROT_FAULT, &adev->gmc.vm_fault);
+	r = gsgpu_irq_add_id(adev, GSGPU_IRQ_CLIENTID_LEGACY, GSGPU_SRCID_GFX_MEM_PROT_FAULT, &adev->gmc.vm_fault);
 	if (r)
 		return r;
 
@@ -390,8 +377,7 @@ static inline int mmu_vm_manager_init(struct gsgpu_device *adev)
 	/*
 	 * number of VMs
 	 * VMID 0 is reserved for System
-	 * gsgpu graphics/compute will use VMIDs 1-7
-	 * amdkfd will use VMIDs 8-15
+	 * gsgpu graphics/compute will use VMIDs 1-3
 	 */
 	adev->vm_manager.id_mgr.num_ids = GSGPU_NUM_VMID;
 	gsgpu_vm_manager_init(adev);
@@ -506,7 +492,6 @@ static bool mmu_is_idle(void *handle)
 
 static bool mmu_check_soft_reset(void *handle)
 {
-	//adev->gmc.srbm_soft_reset = 0;
 	return false;
 }
 
@@ -609,7 +594,7 @@ static const struct gsgpu_ip_funcs mmu_ip_funcs = {
 	.suspend = mmu_suspend,
 	.resume = mmu_resume,
 	.is_idle = mmu_is_idle,
-	.wait_for_idle = NULL,//,
+	.wait_for_idle = NULL,
 	.check_soft_reset = mmu_check_soft_reset,
 	.pre_soft_reset = mmu_pre_soft_reset,
 	.soft_reset = mmu_soft_reset,

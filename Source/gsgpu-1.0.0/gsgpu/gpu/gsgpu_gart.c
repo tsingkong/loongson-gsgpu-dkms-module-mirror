@@ -30,9 +30,6 @@
 #include <linux/vmalloc.h>
 
 #include <drm/gsgpu_drm.h>
-#ifdef CONFIG_X86
-#include <asm/set_memory.h>
-#endif
 #include "gsgpu.h"
 #include <drm/drm_drv.h>
 
@@ -44,10 +41,10 @@
  * perspective.  A page table maps the pages in the aperture
  * to the actual backing pages in system memory.
  *
- * Radeon GPUs support both an internal GART, as described above,
+ * GSGPU GPUs support both an internal GART, as described above,
  * and AGP.  AGP works similarly, but the GART table is configured
  * and maintained by the northbridge rather than the driver.
- * Radeon hw has a separate AGP aperture that is programmed to
+ * GSGPU hw has a separate AGP aperture that is programmed to
  * point to the AGP aperture provided by the northbridge and the
  * requests are passed through to the northbridge aperture.
  * Both AGP and internal GART can be used at the same time, however

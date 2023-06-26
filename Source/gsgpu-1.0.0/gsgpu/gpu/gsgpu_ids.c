@@ -529,6 +529,7 @@ void gsgpu_vmid_mgr_init(struct gsgpu_device *adev)
 
 	mutex_init(&id_mgr->lock);
 	INIT_LIST_HEAD(&id_mgr->ids_lru);
+	id_mgr->reserved_use_count = 0;
 
 	/* skip over VMID 0, since it is the system VM */
 	for (i = 1; i < id_mgr->num_ids; ++i) {
@@ -556,7 +557,6 @@ void gsgpu_vmid_mgr_fini(struct gsgpu_device *adev)
 		struct gsgpu_vmid *id = &id_mgr->ids[i];
 
 		gsgpu_sync_free(&id->active);
-		dma_fence_put(id->flushed_updates);
 		dma_fence_put(id->last_flush);
 		dma_fence_put(id->pasid_mapping);
 	}

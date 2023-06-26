@@ -8,6 +8,7 @@
 
 /* max number of IP instances */
 #define GSGPU_MAX_XDMA_INSTANCES		2
+#define GSGPU_XDMA_FLAG_UMAP 0x20000
 
 enum gsgpu_xdma_irq {
 	GSGPU_XDMA_IRQ_TRAP0 = 0,
@@ -33,7 +34,6 @@ struct gsgpu_xdma {
 	struct gsgpu_irq_src	trap_irq;
 	struct gsgpu_irq_src	illegal_inst_irq;
 	int			num_instances;
-	uint32_t                    srbm_soft_reset;
 };
 
 /*
@@ -78,7 +78,7 @@ struct gsgpu_buffer_funcs {
 
 struct gsgpu_xdma_instance *
 gsgpu_get_xdma_instance(struct gsgpu_ring *ring);
-
+void xdma_ring_test_xdma_loop(struct gsgpu_ring *ring, long timeout);
 extern const struct gsgpu_ip_block_version xdma_ip_block;
 
 #endif /*__GSGPU_XDMA_H__*/

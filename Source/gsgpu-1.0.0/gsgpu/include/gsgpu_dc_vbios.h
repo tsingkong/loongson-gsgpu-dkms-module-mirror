@@ -8,6 +8,7 @@ struct gsgpu_vbios;
 struct vbios_desc;
 struct gsgpu_dc;
 
+#define VBIOS_VERSION_V1_1 (11)
 #define VBIOS_DATA_INVAL 0xFF
 
 enum desc_ver {
@@ -48,19 +49,27 @@ struct vbios_header {
 	u32 data_size;
 } __packed;
 
+enum gsgpu_edid_method {
+	via_null = 0,
+	via_i2c,
+	via_vbios,
+	via_encoder,
+	via_max = 0xffff,
+} __packed;
+
 struct vbios_gpio {
 	u32 feature;
 	u32 type;
-	u32 level_reg_offset; // offset of DC
-	u32 level_reg_mask; // mask of reg
-	u32 dir_reg_offset; // offset of DC
-	u32 dir_reg_mask; //  mask of reg
+	u32 level_reg_offset; /* offset of DC */
+	u32 level_reg_mask; /* mask of reg */
+	u32 dir_reg_offset; /* offset of DC */
+	u32 dir_reg_mask; /* mask of reg */
 } __packed;
 
 struct vbios_i2c {
 	u32 feature;
 	u16 id;
-	u8  speed; // KHZ
+	u8  speed; /* KHZ */
 } __packed;
 
 struct vbios_pwm {
@@ -144,7 +153,7 @@ struct gsgpu_vbios {
 };
 
 enum desc_type {
-	desc_header,
+	desc_header = 0,
 	desc_crtc,
 	desc_encoder,
 	desc_connector,
@@ -153,14 +162,17 @@ enum desc_type {
 	desc_gpio,
 	desc_backlight,
 	desc_fan,
+	desc_irq_vblank,
+	desc_cfg_encoder,
+	desc_res_encoder,
 	desc_gpu,
 	desc_max = 0xffff
 };
 
 #ifdef CONFIG_ACPI
 struct acpi_viat_table {
-        struct acpi_table_header header;
-        u64 vbios_addr;
+	struct acpi_table_header header;
+    u64 vbios_addr;
 } __packed;
 #endif
 
@@ -176,5 +188,7 @@ void *dc_get_vbios_resource(struct gsgpu_vbios *vbios, u32 link,
 			    enum resource_type type);
 bool dc_vbios_init(struct gsgpu_dc *dc);
 void dc_vbios_exit(struct gsgpu_vbios *vbios);
+u8 gsgpu_vbios_checksum(const u8 *data, int size);
+bool check_vbios_info(void);
 
 #endif

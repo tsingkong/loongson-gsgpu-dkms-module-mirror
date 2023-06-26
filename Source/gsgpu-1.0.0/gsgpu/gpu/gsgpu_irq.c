@@ -53,7 +53,7 @@
 #include "gsgpu_trace.h"
 #include "gsgpu_dc_irq.h"
 #include "gsgpu_dc_reg.h"
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 #include <linux/pm_runtime.h>
 
@@ -151,6 +151,7 @@ static irqreturn_t gsgpu_irq_handler(int irq, void *arg)
 	struct drm_device *dev = (struct drm_device *) arg;
 	struct gsgpu_device *adev = drm_to_adev(dev);
 	irqreturn_t ret;
+	DRM_INFO("gsgpu_irq_handler %d.\n", irq);
 
 	ret = gsgpu_ih_process(adev, &adev->irq.ih);
 	if (ret == IRQ_HANDLED)
@@ -211,10 +212,12 @@ static irqreturn_t gsgpu_dc_irq_handler(int irq, void *arg)
 	struct gsgpu_iv_entry entry;
 	struct gsgpu_device *adev = (struct gsgpu_device *)arg;
 	int i = 1;
+	DRM_INFO("gsgpu_dc_irq_handler %d.\n", irq);
 
 	base = (unsigned long)(adev->loongson_dc_rmmio_base);
 
 	int_reg = dc_readl(adev, DC_INT_REG);
+	dc_writel(adev, DC_INT_REG, int_reg);
 	entry.client_id = SOC15_IH_CLIENTID_DCE;
 
 	int_reg &= 0xffff;
@@ -312,8 +315,11 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
 	}
 
 	INIT_WORK(&adev->irq.ih1_work, gsgpu_irq_handle_ih1);
+	DRM_INFO("INIT_WORK gsgpu_irq_handle_ih1.\n");
 	INIT_WORK(&adev->irq.ih2_work, gsgpu_irq_handle_ih2);
+	DRM_INFO("INIT_WORK gsgpu_irq_handle_ih2.\n");
 	INIT_WORK(&adev->irq.ih_soft_work, gsgpu_irq_handle_ih_soft);
+	DRM_INFO("INIT_WORK gsgpu_irq_handle_ih_soft.\n");
 
 	/* Use vector 0 for MSI-X. */
 	r = pci_irq_vector(adev->pdev, 0);
@@ -322,6 +328,7 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
 	irq = r;
 
 	/* PCI devices require shared interrupts. */
+	DRM_INFO("request_irq %d gsgpu_irq_handler %s.\n", irq, adev_to_drm(adev)->driver->name);
 	r = request_irq(irq, gsgpu_irq_handler, IRQF_SHARED, adev_to_drm(adev)->driver->name,
 			adev_to_drm(adev));
 	if (r)
@@ -333,7 +340,8 @@ int gsgpu_irq_init(struct gsgpu_device *adev)
 	loongson_dc = adev->loongson_dc;
 	if (loongson_dc) {
 		u32 dc_irq = loongson_dc->irq;
-		r = request_irq(dc_irq, gsgpu_dc_irq_handler, 0,
+		DRM_INFO("request_irq %d gsgpu_dc_irq_handler %s.\n", dc_irq, loongson_dc->driver->name);
+		r = request_irq(dc_irq, gsgpu_dc_irq_handler, IRQF_SHARED,
 				loongson_dc->driver->name, adev);
 		if (r) {
 			DRM_ERROR("gsgpu register dc irq failed\n");
@@ -468,12 +476,13 @@ void gsgpu_irq_dispatch(struct gsgpu_device *adev,
 
 	entry.ih = ih;
 	entry.iv_entry = (const uint32_t *)&ih->ring[ring_index];
-	gsgpu_ih_decode_iv(adev, &entry);
+	gsgpu_ih_decode_iv(adev, ih, &entry);
 
 	trace_gsgpu_iv(ih - &adev->irq.ih, &entry);
 
 	client_id = entry.client_id;
 	src_id = entry.src_id;
+	DRM_INFO("gsgpu_irq_dispatch client_id:%d, src_id:%d\n", client_id, src_id);
 
 	if (client_id >= GSGPU_IRQ_CLIENTID_MAX) {
 		DRM_DEBUG("Invalid client_id in IV: %d\n", client_id);
@@ -590,6 +599,7 @@ void gsgpu_irq_gpu_reset_resume_helper(struct gsgpu_device *adev)
 int gsgpu_irq_get(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 		   unsigned type)
 {
+	DRM_DEBUG("gsgpu_irq_get type:%d\n", type);
 	if (!adev->irq.installed)
 		return -ENOENT;
 

@@ -5,7 +5,6 @@
 
 #include <drm/drm_atomic_helper.h>
 #include <gsgpu.h>
-#include "loongson-pch.h"
 #include "gsgpu_dc.h"
 #include "gsgpu_dc_resource.h"
 #include "gsgpu_dc_plane.h"
@@ -14,31 +13,35 @@
 #include "gsgpu_dc_reg.h"
 
 static unsigned int
-cal_freq(unsigned int pixclock_khz, struct pixel_clock * pll_config)
+cal_freq(unsigned int pixclock_khz, struct pixel_clock *pll_config)
 {
 	unsigned int pstdiv, loopc, frefc;
 	unsigned long a, b, c;
-	unsigned long min = 1000;
+	unsigned long min = 50;
 
 	for (pstdiv = 1; pstdiv < 64; pstdiv++) {
 		a = (unsigned long)pixclock_khz * pstdiv;
 		for (frefc = 3; frefc < 6; frefc++) {
 			for (loopc = 24; loopc < 161; loopc++) {
 				if ((loopc < 12 * frefc) ||
-					(loopc > 32 * frefc))
+				    (loopc > 32 * frefc))
 					continue;
 
 				b = 100000L * loopc / frefc;
-				c = (a > b) ? (a - b) : (b - a);
+				c = (a > b) ? (a * 10000 / b - 10000) :
+					(b * 10000 / a - 10000);
 				if (c < min) {
+					min = c;
 					pll_config->l2_div = pstdiv;
 					pll_config->l1_loopc = loopc;
 					pll_config->l1_frefc = frefc;
-					return 1;
 				}
 			}
 		}
 	}
+
+	if (min < 50)
+		return 1;
 
 	return 0;
 }
@@ -53,18 +56,15 @@ static void dc_io_wreg(void *base, u32 offset, u32 val)
 	writel(val, base + offset);
 }
 
-static bool config_pll(u32 clock, unsigned long pll_reg)
+static bool config_pll(struct gsgpu_device *adev, u32 clock, unsigned long pll_reg)
 {
 	u32 val;
 	u32 count = 0;
 	struct pixel_clock pll_cfg = {0};
 
-	void __iomem *io_base = ioremap(LS7A_CHIPCFG_REG_BASE, 0xf);
+	void __iomem *io_base = adev->io_base;
 	if (io_base == NULL)
 		return false;
-
-	dc_io_wreg(io_base, pll_reg + 0x4, 0x0);
-	dc_io_wreg(io_base, pll_reg + 0x0, 0x0);
 
 	cal_freq(clock, &pll_cfg);
 
@@ -132,14 +132,20 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 
 	if (IS_ERR_OR_NULL(crtc) || IS_ERR_OR_NULL(timing))
 		return false;
+	
+	DRM_DEBUG_DRIVER("crtc %d timing set: clock %d, stride %d\n",
+		crtc->resource->base.link, timing->clock, timing->stride);
+	DRM_DEBUG_DRIVER("hdisplay %d, hsync_start %d, hsync_end %d, htotal %d\n",
+		timing->hdisplay, timing->hsync_start, timing->hsync_end, timing->htotal);
+	DRM_DEBUG_DRIVER("vdisplay %d, vsync_start %d, vsync_end %d, vtotal %d\n",
+		timing->vdisplay, timing->vsync_start, timing->vsync_end, timing->vtotal);
+	DRM_DEBUG_DRIVER("depth %d, use_dma32 %d\n", timing->depth, timing->use_dma32);
 
 	link = crtc->resource->base.link;
 	if (link >= DC_DVO_MAXLINK)
 		return false;
 
-	if (timing->hdisplay == 2560)
-		timing->clock = 124750; /*145000*/
-	if (config_pll(timing->clock, CURRENT_REG(DC_IO_PIX_PLL, link)) == false)
+	if (config_pll(adev, timing->clock, CURRENT_REG(DC_IO_PIX_PLL, link)) == false)
 		return false;
 
 	value = dc_readl(adev, CURRENT_REG(DC_CRTC_CFG_REG, link));
@@ -157,7 +163,9 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 	}
 
 	value &= ~CRTC_CFG_DMA_MASK;
-	if (!(timing->hdisplay % 64))
+	if (timing->use_dma32)
+		value |= CRTC_CFG_DMA_32;
+	else if (!(timing->hdisplay % 64))
 		value |= CRTC_CFG_DMA_256;
 	else if (!(timing->hdisplay % 32))
 		value |= CRTC_CFG_DMA_128;
@@ -186,7 +194,6 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 	}
 	temp = value | CRTC_CFG_ENABLE;
 
-	dc_writel(adev, CURRENT_REG(DC_CRTC_CFG_REG, link), value);
 	dc_writel(adev, CURRENT_REG(DC_CRTC_STRIDE_REG, link), stride_reg);
 
 	value = ((timing->hdisplay & CRTC_HPIXEL_MASK) <<CRTC_HPIXEL_SHIFT);
@@ -212,10 +219,6 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 	dc_writel(adev, CURRENT_REG(DC_CRTC_PANELCFG_REG, link), value);
 	dc_writel(adev, CURRENT_REG(DC_CRTC_PANELTIM_REG, link), 0);
 
-	/*set hdmi*/
-	value = dc_readl(adev, CURRENT_REG(DC_HDMI_CTRL_REG, link));
-	value |= (1 << 0);
-	dc_writel(adev, CURRENT_REG(DC_HDMI_CTRL_REG, link), value);
 	hdmi_phy_pll_config(adev, link, timing->clock);
 
 	dc_writel(adev, CURRENT_REG(DC_CRTC_CFG_REG, link), temp);
@@ -226,8 +229,9 @@ bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timin
 bool dc_crtc_enable(struct gsgpu_crtc *acrtc, bool enable)
 {
 	struct gsgpu_device *adev = drm_to_adev(acrtc->base.dev);
-	u32 crtc_id;
 	u32 crtc_cfg, hdmi_ctrl, crtc_pan;
+	u32 hsync_val, vsync_val;
+	u32 crtc_id;
 
 	if (IS_ERR_OR_NULL(acrtc))
 		return false;
@@ -239,22 +243,30 @@ bool dc_crtc_enable(struct gsgpu_crtc *acrtc, bool enable)
 	crtc_cfg = dc_readl(adev, CURRENT_REG(DC_CRTC_CFG_REG, crtc_id));
 	hdmi_ctrl = dc_readl(adev, CURRENT_REG(DC_HDMI_CTRL_REG, crtc_id));
 	crtc_pan = dc_readl(adev, CURRENT_REG(DC_CRTC_PANELCFG_REG, crtc_id));
+	hsync_val = dc_readl(adev, CURRENT_REG(DC_CRTC_HSYNC_REG, crtc_id));
+	vsync_val = dc_readl(adev, CURRENT_REG(DC_CRTC_VSYNC_REG, crtc_id));
 
 	if (enable) {
 		crtc_cfg |= CRTC_CFG_ENABLE;
 		hdmi_ctrl |= HDMI_CTRL_ENABLE;
 		crtc_pan |= CRTC_PANCFG_DE;
 		crtc_pan |= CRTC_PANCFG_CLKEN;
+		hsync_val |= CRTC_HSYNC_POLSE;
+		vsync_val |= CRTC_VSYNC_POLSE;
 	} else {
 		crtc_cfg &= ~CRTC_CFG_ENABLE;
 		hdmi_ctrl &= ~HDMI_CTRL_ENABLE;
 		crtc_pan &= ~CRTC_PANCFG_DE;
 		crtc_pan &= ~CRTC_PANCFG_CLKEN;
+		hsync_val &= ~CRTC_HSYNC_POLSE;
+		vsync_val &= ~CRTC_VSYNC_POLSE;
 	}
 
 	dc_writel(adev, CURRENT_REG(DC_CRTC_CFG_REG, crtc_id), crtc_cfg);
 	dc_writel(adev, CURRENT_REG(DC_HDMI_CTRL_REG, crtc_id), hdmi_ctrl);
 	dc_writel(adev, CURRENT_REG(DC_CRTC_PANELCFG_REG, crtc_id), crtc_pan);
+	dc_writel(adev, CURRENT_REG(DC_CRTC_HSYNC_REG, crtc_id), hsync_val);
+	dc_writel(adev, CURRENT_REG(DC_CRTC_VSYNC_REG, crtc_id), vsync_val);
 
 	return true;
 }
@@ -469,19 +481,32 @@ static int crtc_helper_atomic_check(struct drm_crtc *crtc,
 static enum drm_mode_status gsgpu_dc_mode_valid(struct drm_crtc *crtc,
 				const struct drm_display_mode *mode)
 {
-	if (mode->hdisplay > 2560)
-		return MODE_BAD;
-	if (mode->vdisplay > 1600)
-		return MODE_BAD;
-	if (mode->hdisplay < 640)
-		return MODE_BAD;
-	if (mode->vdisplay < 480)
-		return MODE_BAD;
+	struct gsgpu_device *adev = crtc->dev->dev_private;
+
+	switch (adev->chip) {
+	case dev_7a2000:
+		if (mode->hdisplay > 4096)
+			return MODE_BAD;
+		if (mode->vdisplay > 2160)
+			return MODE_BAD;
+		break;
+	case dev_2k2000:
+		if (mode->hdisplay > 1920 && crtc->index == 1)
+			return MODE_BAD;
+		else if (mode->hdisplay > 4096)
+			return MODE_BAD;
+		if (mode->vdisplay > 1080 && crtc->index == 1)
+			return MODE_BAD;
+		else if (mode->vdisplay > 2160)
+			return MODE_BAD;
+		break;
+	}
+
 	if (mode->hdisplay % 8)
 		return MODE_BAD;
 	if (mode->clock > 340000)
 		return MODE_CLOCK_HIGH;
-	if (mode->hdisplay == 1680)
+	if (mode->vdisplay < 480)
 		return MODE_BAD;
 
 	return MODE_OK;

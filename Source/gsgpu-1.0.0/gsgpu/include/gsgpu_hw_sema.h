@@ -9,7 +9,7 @@ struct gsgpu_hw_sema {
 	struct list_head	list;
 
 	struct gsgpu_vm		*vm;
-        bool		own;
+    bool		own;
 	unsigned	pasid;
 	unsigned	ctx;
 };
