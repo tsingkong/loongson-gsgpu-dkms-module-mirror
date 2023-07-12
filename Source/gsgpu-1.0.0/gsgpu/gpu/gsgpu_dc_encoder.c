@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include <drm/drm_encoder.h>
 #include <drm/drm_atomic_helper.h>
 #include "gsgpu.h"
@@ -52,6 +47,7 @@ struct gsgpu_dc_encoder *dc_encoder_construct(struct gsgpu_dc *dc, struct encode
 
 	encoder->dc = dc;
 	encoder->resource = resource;
+	encoder->has_ext_encoder = false;
 
 	link = encoder->resource->base.link;
 	if (link >= DC_DVO_MAXLINK)
@@ -83,6 +79,7 @@ int gsgpu_dc_encoder_init(struct gsgpu_device *adev, int link_index)
 	lencoder->base.possible_crtcs = 1 << link_index;
 
 	adev->mode_info.encoders[link_index] = lencoder;
+	adev->mode_info.encoders[link_index]->bridge = NULL;
 
 	drm_encoder_helper_add(&lencoder->base, &dc_encoder_helper_funcs);
 

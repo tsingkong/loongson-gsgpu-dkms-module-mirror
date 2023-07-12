@@ -1,28 +1,3 @@
-/*
- * Copyright 2018 Advanced Micro Devices, Inc.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE COPYRIGHT HOLDERS, AUTHORS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- */
 #ifndef __GSGPU_GMC_H__
 #define __GSGPU_GMC_H__
 
@@ -91,7 +66,6 @@ struct gsgpu_gmc {
 	uint32_t                fw_version;
 	struct gsgpu_irq_src	vm_fault;
 	uint32_t		vram_type;
-	uint32_t                srbm_soft_reset;
 	bool			prt_warning;
 	uint64_t		stolen_size;
 	/* protects concurrent invalidation */
@@ -116,4 +90,4 @@ static inline bool gsgpu_gmc_vram_full_visible(struct gsgpu_gmc *gmc)
 	return (gmc->real_vram_size == gmc->visible_vram_size);
 }
 
-#endif
+#endif /* __GSGPU_GMC_H__ */

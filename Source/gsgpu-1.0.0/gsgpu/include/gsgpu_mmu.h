@@ -1,26 +1,3 @@
-/*
- * Copyright 2020 Loongson Technology, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
-
 #ifndef __GSGPU_MMU_H__
 #define __GSGPU_MMU_H__
 
@@ -50,13 +27,13 @@
 #define GSGPU_MMU_VMID_OF_PGD(vmid)   \
 			     (GSGPU_MMU_PGD_LO_OFFSET + ((vmid) * GSGPU_MMU_PGD_REG_SIZE))
 
-#define GSGPU_MMU_DIR_CTRL_256M_1LVL ((14 << 26 | 0 << 20) | \
-			              (14 << 16 | 0 << 10) | \
-			              (14 <<  6 | 14 <<  0))
+#define GSGPU_MMU_DIR_CTRL_256M_1LVL  ((14 << 26 | 0 << 20) | \
+						(14 << 16 | 0 << 10) | \
+						(14 <<  6 | 14 <<  0))
 
-#define GSGPU_MMU_DIR_CTRL_1T_3LVL   (( 4 << 26 | 36 << 20) | \
-			              (11 << 16 | 25 << 10) | \
-			              (11 <<  6 | 14 <<  0))
+#define GSGPU_MMU_DIR_CTRL_1T_3LVL  ((4 << 26 | 36 << 20) | \
+						(11 << 16 | 25 << 10) | \
+						(11 <<  6 | 14 <<  0))
 
 #define GSGPU_MMU_FLUSH_DOMAIN_SHIFT 	8
 #define GSGPU_MMU_FLUSH_EN 				BIT(0)
@@ -64,7 +41,7 @@
 #define GSGPU_MMU_FLUSH_VMID 			0
 
 #define GSGPU_MMU_FLUSH_PKT(vmid, all) \
-			     ((vmid << GSGPU_MMU_FLUSH_DOMAIN_SHIFT) | (all) | GSGPU_MMU_FLUSH_EN )
+			     ((vmid << GSGPU_MMU_FLUSH_DOMAIN_SHIFT) | (all) | GSGPU_MMU_FLUSH_EN)
 
 
 extern const struct gsgpu_ip_block_version mmu_ip_block;

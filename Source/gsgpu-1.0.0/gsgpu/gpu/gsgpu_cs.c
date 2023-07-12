@@ -1,29 +1,3 @@
-/*
- * Copyright 2008 Jerome Glisse.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * PRECISION INSIGHT AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- *
- * Authors:
- *    Jerome Glisse <glisse@freedesktop.org>
- */
 #include <linux/pagemap.h>
 #include <linux/sync_file.h>
 #include <drm/drmP.h>
@@ -318,7 +292,7 @@ static void gsgpu_cs_get_threshold_for_moves(struct gsgpu_device *adev,
 	increment_us = time_us - adev->mm_stats.last_update_us;
 	adev->mm_stats.last_update_us = time_us;
 	adev->mm_stats.accum_us = min(adev->mm_stats.accum_us + increment_us,
-                                      us_upper_bound);
+						us_upper_bound);
 
 	/* This prevents the short period of low performance when the VRAM
 	 * usage is low and the driver is in debt or doesn't have enough
@@ -454,7 +428,7 @@ static bool gsgpu_cs_try_evict(struct gsgpu_cs_parser *p,
 	if (!p->evictable)
 		return false;
 
-	for (;&p->evictable->tv.head != &p->validated;
+	for (; &p->evictable->tv.head != &p->validated;
 	     p->evictable = list_prev_entry(p->evictable, tv.head)) {
 
 		struct gsgpu_bo_list_entry *candidate = p->evictable;
@@ -658,7 +632,7 @@ static int gsgpu_cs_parser_bos(struct gsgpu_cs_parser *p,
 			struct ttm_tt *ttm = e->robj->tbo.ttm;
 
 			e->user_pages = kvmalloc_array(ttm->num_pages,
-							 sizeof(struct page*),
+							 sizeof(struct page *),
 							 GFP_KERNEL | __GFP_ZERO);
 			if (!e->user_pages) {
 				r = -ENOMEM;
@@ -1331,7 +1305,7 @@ int gsgpu_cs_fence_to_handle_ioctl(struct drm_device *dev, void *data,
 		dma_fence_put(fence);
 		if (r)
 			return r;
-		r = drm_syncobj_get_fd(syncobj, (int*)&info->out.handle);
+		r = drm_syncobj_get_fd(syncobj, (int *)&info->out.handle);
 		drm_syncobj_put(syncobj);
 		return r;
 

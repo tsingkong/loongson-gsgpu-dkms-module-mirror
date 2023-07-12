@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/* Copyright (C) 2022 Loongson Inc. */
-
 #include <drm/drmP.h>
 #include "gsgpu.h"
 #include <drm/gsgpu_drm.h>
@@ -58,8 +55,7 @@ int gsgpu_driver_load_kms(struct drm_device *dev, unsigned long flags)
 	dev->dev_private = (void *)adev;
 
 	if ((gsgpu_runtime_pm != 0) &&
-	    ((flags & GSGPU_IS_APU) == 0) &&
-	    !pci_is_thunderbolt_attached(dev->pdev))
+	    ((flags & GSGPU_IS_APU) == 0))
 		flags |= GSGPU_IS_PX;
 
 	/* gsgpu_device_init should report only fatal error
@@ -184,7 +180,6 @@ static int gsgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file 
 	uint32_t ui32 = 0;
 	uint64_t ui64 = 0;
 	int i, found;
-	int ui32_size = sizeof(ui32);
 
 	if (!info->return_size || !info->return_pointer)
 		return -EINVAL;
@@ -407,7 +402,7 @@ static int gsgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file 
 
 		dev_info.max_engine_clock = adev->clock.default_sclk * 10;
 		dev_info.max_memory_clock = adev->clock.default_mclk * 10;
-				
+
 		dev_info.enabled_rb_pipes_mask = adev->gfx.config.backend_enable_mask;
 		dev_info.num_rb_pipes = adev->gfx.config.max_backends_per_se *
 			adev->gfx.config.max_shader_engines;

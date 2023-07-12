@@ -1,10 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
-#ifndef GSGPU_MODE_H
-#define GSGPU_MODE_H
+#ifndef __GSGPU_MODE_H__
+#define __GSGPU_MODE_H__
 
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
@@ -110,6 +105,7 @@ struct gsgpu_encoder {
 	struct drm_encoder base;
 	uint32_t encoder_enum;
 	uint32_t encoder_id;
+	struct gsgpu_bridge_phy *bridge;
 };
 
 enum gsgpu_connector_audio {
@@ -181,4 +177,4 @@ bool gsgpu_fbdev_robj_is_fb(struct gsgpu_device *adev, struct gsgpu_bo *robj);
 int gsgpu_align_pitch(struct gsgpu_device *adev, int width, int bpp, bool tiled);
 int gsgpu_display_modeset_create_props(struct gsgpu_device *adev);
 
-#endif
+#endif /* __GSGPU_MODE_H__ */

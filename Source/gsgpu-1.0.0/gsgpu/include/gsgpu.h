@@ -1,30 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Dave Airlie
- *          Alex Deucher
- *          Jerome Glisse
- */
 #ifndef __GSGPU_H__
 #define __GSGPU_H__
 
@@ -130,6 +103,11 @@ struct gsgpu_job;
 struct gsgpu_irq_src;
 struct gsgpu_fpriv;
 struct gsgpu_bo_va_mapping;
+
+enum gsgpu_chip {
+	dev_7a2000,
+	dev_2k2000
+};
 
 enum gsgpu_cp_irq {
 	GSGPU_CP_IRQ_GFX_EOP = 0,
@@ -758,9 +736,6 @@ struct gsgpu_gfx {
 	struct gsgpu_cu_info		cu_info;
 	const struct gsgpu_gfx_funcs	*funcs;
 
-	/* reset mask */
-	uint32_t                        grbm_soft_reset;
-	uint32_t                        srbm_soft_reset;
 	/* s3/s4 mask */
 	bool                            in_suspend;
 };
@@ -848,7 +823,7 @@ int gsgpu_device_wb_get(struct gsgpu_device *adev, u32 *wb);
 void gsgpu_device_wb_free(struct gsgpu_device *adev, u32 wb);
 
 /*
- * SDMA
+ * XDMA
  */
 struct gsgpu_xdma_instance {
 	/* SDMA firmware */
@@ -865,20 +840,12 @@ struct gsgpu_xdma {
 	struct gsgpu_irq_src	trap_irq;
 	struct gsgpu_irq_src	illegal_inst_irq;
 	int			num_instances;
-	uint32_t                    srbm_soft_reset;
 };
 
 /*
  * Firmware
  */
-enum gsgpu_firmware_load_type {
-	GSGPU_FW_LOAD_DIRECT = 0,
-	GSGPU_FW_LOAD_SMU,
-	GSGPU_FW_LOAD_PSP,
-};
-
 struct gsgpu_firmware {
-	enum gsgpu_firmware_load_type load_type;
 	struct gsgpu_bo *fw_buf;
 	unsigned int fw_size;
 	unsigned int max_ucodes;
@@ -1013,7 +980,8 @@ struct gsgpu_device {
 	struct drm_device		*ddev;
 	struct pci_dev			*pdev;
 	struct pci_dev			*loongson_dc;
-	u8 chip_revision;
+	u8				dc_revision;
+	u8				chip;
 
 	/* ASIC */
 	enum gsgpu_family_type		family_type;
@@ -1055,6 +1023,7 @@ struct gsgpu_device {
 	resource_size_t			loongson_dc_rmmio_base;
 	resource_size_t			loongson_dc_rmmio_size;
 	void __iomem			*loongson_dc_rmmio;
+	void __iomem			*io_base;
 
 	/* protects concurrent MM_INDEX/DATA based register access */
 	spinlock_t mmio_idx_lock;
@@ -1184,7 +1153,7 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 void gsgpu_device_fini(struct gsgpu_device *adev);
 int gsgpu_gpu_wait_for_idle(struct gsgpu_device *adev);
 
-uint64_t gsgpu_cmd_exec(struct gsgpu_device *adev, uint32_t cmd, 
+uint64_t gsgpu_cmd_exec(struct gsgpu_device *adev, uint32_t cmd,
 			uint32_t arg0, uint32_t arg1);
 
 uint32_t gsgpu_mm_rreg(struct gsgpu_device *adev, uint32_t reg,
@@ -1275,65 +1244,65 @@ gsgpu_get_xdma_instance(struct gsgpu_ring *ring)
 /*
  * ASICs macro.
  */
-#define gsgpu_asic_set_vga_state(adev, state) (adev)->asic_funcs->set_vga_state((adev), (state))
-#define gsgpu_asic_reset(adev) (adev)->asic_funcs->reset((adev))
-#define gsgpu_asic_get_clk(adev) (adev)->asic_funcs->get_clk((adev))
-#define gsgpu_get_pcie_lanes(adev) (adev)->asic_funcs->get_pcie_lanes((adev))
-#define gsgpu_set_pcie_lanes(adev, l) (adev)->asic_funcs->set_pcie_lanes((adev), (l))
-#define gsgpu_asic_read_bios_from_rom(adev, b, l) (adev)->asic_funcs->read_bios_from_rom((adev), (b), (l))
-#define gsgpu_asic_read_register(adev, se, sh, offset, v)((adev)->asic_funcs->read_register((adev), (se), (sh), (offset), (v)))
-#define gsgpu_asic_need_full_reset(adev) (adev)->asic_funcs->need_full_reset((adev))
-#define gsgpu_gmc_flush_gpu_tlb(adev, vmid) (adev)->gmc.gmc_funcs->flush_gpu_tlb((adev), (vmid))
-#define gsgpu_gmc_emit_flush_gpu_tlb(r, vmid, addr) (r)->adev->gmc.gmc_funcs->emit_flush_gpu_tlb((r), (vmid), (addr))
-#define gsgpu_gmc_emit_pasid_mapping(r, vmid, pasid) (r)->adev->gmc.gmc_funcs->emit_pasid_mapping((r), (vmid), (pasid))
-#define gsgpu_gmc_set_pte_pde(adev, pt, idx, addr, flags) (adev)->gmc.gmc_funcs->set_pte_pde((adev), (pt), (idx), (addr), (flags))
-#define gsgpu_gmc_get_vm_pde(adev, level, dst, flags) (adev)->gmc.gmc_funcs->get_vm_pde((adev), (level), (dst), (flags))
-#define gsgpu_gmc_get_pte_flags(adev, flags) (adev)->gmc.gmc_funcs->get_vm_pte_flags((adev),(flags))
+#define gsgpu_asic_set_vga_state(adev, state) ((adev)->asic_funcs->set_vga_state((adev), (state)))
+#define gsgpu_asic_reset(adev) ((adev)->asic_funcs->reset((adev)))
+#define gsgpu_asic_get_clk(adev) ((adev)->asic_funcs->get_clk((adev)))
+#define gsgpu_get_pcie_lanes(adev) ((adev)->asic_funcs->get_pcie_lanes((adev)))
+#define gsgpu_set_pcie_lanes(adev, l) ((adev)->asic_funcs->set_pcie_lanes((adev), (l)))
+#define gsgpu_asic_read_bios_from_rom(adev, b, l) ((adev)->asic_funcs->read_bios_from_rom((adev), (b), (l)))
+#define gsgpu_asic_read_register(adev, se, sh, offset, v) ((adev)->asic_funcs->read_register((adev), (se), (sh), (offset), (v)))
+#define gsgpu_asic_need_full_reset(adev) ((adev)->asic_funcs->need_full_reset((adev)))
+#define gsgpu_gmc_flush_gpu_tlb(adev, vmid) ((adev)->gmc.gmc_funcs->flush_gpu_tlb((adev), (vmid)))
+#define gsgpu_gmc_emit_flush_gpu_tlb(r, vmid, addr) ((r)->adev->gmc.gmc_funcs->emit_flush_gpu_tlb((r), (vmid), (addr)))
+#define gsgpu_gmc_emit_pasid_mapping(r, vmid, pasid) ((r)->adev->gmc.gmc_funcs->emit_pasid_mapping((r), (vmid), (pasid)))
+#define gsgpu_gmc_set_pte_pde(adev, pt, idx, addr, flags) ((adev)->gmc.gmc_funcs->set_pte_pde((adev), (pt), (idx), (addr), (flags)))
+#define gsgpu_gmc_get_vm_pde(adev, level, dst, flags) ((adev)->gmc.gmc_funcs->get_vm_pde((adev), (level), (dst), (flags)))
+#define gsgpu_gmc_get_pte_flags(adev, flags) ((adev)->gmc.gmc_funcs->get_vm_pte_flags((adev), (flags)))
 #define gsgpu_vm_copy_pte(adev, ib, pe, src, count) ((adev)->vm_manager.vm_pte_funcs->copy_pte((ib), (pe), (src), (count)))
 #define gsgpu_vm_write_pte(adev, ib, pe, value, count, incr) ((adev)->vm_manager.vm_pte_funcs->write_pte((ib), (pe), (value), (count), (incr)))
 #define gsgpu_vm_set_pte_pde(adev, ib, pe, addr, count, incr, flags) ((adev)->vm_manager.vm_pte_funcs->set_pte_pde((ib), (pe), (addr), (count), (incr), (flags)))
 #define gsgpu_ring_parse_cs(r, p, ib) ((r)->funcs->parse_cs((p), (ib)))
 #define gsgpu_ring_patch_cs_in_place(r, p, ib) ((r)->funcs->patch_cs_in_place((p), (ib)))
-#define gsgpu_ring_test_ring(r) (r)->funcs->test_ring((r))
-#define gsgpu_ring_test_ib(r, t) (r)->funcs->test_ib((r), (t))
-#define gsgpu_ring_test_xdma(r, t) (r)->funcs->test_xdma((r), (t))
-#define gsgpu_ring_get_rptr(r) (r)->funcs->get_rptr((r))
-#define gsgpu_ring_get_wptr(r) (r)->funcs->get_wptr((r))
-#define gsgpu_ring_set_wptr(r) (r)->funcs->set_wptr((r))
-#define gsgpu_ring_emit_ib(r, ib, vmid, c) (r)->funcs->emit_ib((r), (ib), (vmid), (c))
-#define gsgpu_ring_emit_pipeline_sync(r) (r)->funcs->emit_pipeline_sync((r))
-#define gsgpu_ring_emit_vm_flush(r, vmid, addr) (r)->funcs->emit_vm_flush((r), (vmid), (addr))
-#define gsgpu_ring_emit_fence(r, addr, seq, flags) (r)->funcs->emit_fence((r), (addr), (seq), (flags))
-#define gsgpu_ring_emit_switch_buffer(r) (r)->funcs->emit_switch_buffer((r))
-#define gsgpu_ring_emit_cntxcntl(r, d) (r)->funcs->emit_cntxcntl((r), (d))
-#define gsgpu_ring_emit_rreg(r, d) (r)->funcs->emit_rreg((r), (d))
-#define gsgpu_ring_emit_wreg(r, d, v) (r)->funcs->emit_wreg((r), (d), (v))
-#define gsgpu_ring_emit_reg_wait(r, d, v, m) (r)->funcs->emit_reg_wait((r), (d), (v), (m))
-#define gsgpu_ring_emit_reg_write_reg_wait(r, d0, d1, v, m) (r)->funcs->emit_reg_write_reg_wait((r), (d0), (d1), (v), (m))
-#define gsgpu_ring_emit_tmz(r, b) (r)->funcs->emit_tmz((r), (b))
+#define gsgpu_ring_test_ring(r) ((r)->funcs->test_ring((r)))
+#define gsgpu_ring_test_ib(r, t) ((r)->funcs->test_ib((r), (t)))
+#define gsgpu_ring_test_xdma(r, t) ((r)->funcs->test_xdma((r), (t)))
+#define gsgpu_ring_get_rptr(r) ((r)->funcs->get_rptr((r)))
+#define gsgpu_ring_get_wptr(r) ((r)->funcs->get_wptr((r)))
+#define gsgpu_ring_set_wptr(r) ((r)->funcs->set_wptr((r)))
+#define gsgpu_ring_emit_ib(r, ib, vmid, c) ((r)->funcs->emit_ib((r), (ib), (vmid), (c)))
+#define gsgpu_ring_emit_pipeline_sync(r) ((r)->funcs->emit_pipeline_sync((r)))
+#define gsgpu_ring_emit_vm_flush(r, vmid, addr) ((r)->funcs->emit_vm_flush((r), (vmid), (addr)))
+#define gsgpu_ring_emit_fence(r, addr, seq, flags) ((r)->funcs->emit_fence((r), (addr), (seq), (flags)))
+#define gsgpu_ring_emit_switch_buffer(r) ((r)->funcs->emit_switch_buffer((r)))
+#define gsgpu_ring_emit_cntxcntl(r, d) ((r)->funcs->emit_cntxcntl((r), (d)))
+#define gsgpu_ring_emit_rreg(r, d) ((r)->funcs->emit_rreg((r), (d)))
+#define gsgpu_ring_emit_wreg(r, d, v) ((r)->funcs->emit_wreg((r), (d), (v)))
+#define gsgpu_ring_emit_reg_wait(r, d, v, m) ((r)->funcs->emit_reg_wait((r), (d), (v), (m)))
+#define gsgpu_ring_emit_reg_write_reg_wait(r, d0, d1, v, m) ((r)->funcs->emit_reg_write_reg_wait((r), (d0), (d1), (v), (m)))
+#define gsgpu_ring_emit_tmz(r, b) ((r)->funcs->emit_tmz((r), (b)))
 #define gsgpu_ring_pad_ib(r, ib) ((r)->funcs->pad_ib((r), (ib)))
-#define gsgpu_ring_init_cond_exec(r) (r)->funcs->init_cond_exec((r))
-#define gsgpu_ring_patch_cond_exec(r,o) (r)->funcs->patch_cond_exec((r),(o))
-#define gsgpu_ih_get_wptr(adev) (adev)->irq.ih_funcs->get_wptr((adev))
-#define gsgpu_ih_prescreen_iv(adev) (adev)->irq.ih_funcs->prescreen_iv((adev))
-#define gsgpu_ih_decode_iv(adev, iv) (adev)->irq.ih_funcs->decode_iv((adev), (iv))
-#define gsgpu_ih_set_rptr(adev) (adev)->irq.ih_funcs->set_rptr((adev))
-#define gsgpu_display_vblank_get_counter(adev, crtc) (adev)->mode_info.funcs->vblank_get_counter((adev), (crtc))
-#define gsgpu_display_backlight_set_level(adev, e, l) (adev)->mode_info.funcs->backlight_set_level((e), (l))
-#define gsgpu_display_backlight_get_level(adev, e) (adev)->mode_info.funcs->backlight_get_level((e))
-#define gsgpu_display_hpd_sense(adev, h) (adev)->mode_info.funcs->hpd_sense((adev), (h))
-#define gsgpu_display_hpd_set_polarity(adev, h) (adev)->mode_info.funcs->hpd_set_polarity((adev), (h))
-#define gsgpu_display_page_flip(adev, crtc, base, async) (adev)->mode_info.funcs->page_flip((adev), (crtc), (base), (async))
-#define gsgpu_display_page_flip_get_scanoutpos(adev, crtc, vbl, pos) (adev)->mode_info.funcs->page_flip_get_scanoutpos((adev), (crtc), (vbl), (pos))
-#define gsgpu_emit_copy_buffer(adev, ib, s, d, b) (adev)->mman.buffer_funcs->emit_copy_buffer((ib),  (s), (d), (b))
-#define gsgpu_emit_fill_buffer(adev, ib, s, d, b) (adev)->mman.buffer_funcs->emit_fill_buffer((ib), (s), (d), (b))
-#define gsgpu_gfx_get_gpu_clock_counter(adev) (adev)->gfx.funcs->get_gpu_clock_counter((adev))
-#define gsgpu_psp_check_fw_loading_status(adev, i) (adev)->firmware.funcs->check_fw_loading_status((adev), (i))
-#define gsgpu_gfx_select_me_pipe_q(adev, me, pipe, q) (adev)->gfx.funcs->select_me_pipe_q((adev), (me), (pipe), (q))
+#define gsgpu_ring_init_cond_exec(r) ((r)->funcs->init_cond_exec((r)))
+#define gsgpu_ring_patch_cond_exec(r, o) ((r)->funcs->patch_cond_exec((r), (o)))
+#define gsgpu_ih_get_wptr(adev) ((adev)->irq.ih_funcs->get_wptr((adev)))
+#define gsgpu_ih_prescreen_iv(adev) ((adev)->irq.ih_funcs->prescreen_iv((adev)))
+#define gsgpu_ih_decode_iv(adev, iv) ((adev)->irq.ih_funcs->decode_iv((adev), (iv)))
+#define gsgpu_ih_set_rptr(adev) ((adev)->irq.ih_funcs->set_rptr((adev)))
+#define gsgpu_display_vblank_get_counter(adev, crtc) ((adev)->mode_info.funcs->vblank_get_counter((adev), (crtc)))
+#define gsgpu_display_backlight_set_level(adev, e, l) ((adev)->mode_info.funcs->backlight_set_level((e), (l)))
+#define gsgpu_display_backlight_get_level(adev, e) ((adev)->mode_info.funcs->backlight_get_level((e)))
+#define gsgpu_display_hpd_sense(adev, h) ((adev)->mode_info.funcs->hpd_sense((adev), (h)))
+#define gsgpu_display_hpd_set_polarity(adev, h) ((adev)->mode_info.funcs->hpd_set_polarity((adev), (h)))
+#define gsgpu_display_page_flip(adev, crtc, base, async) ((adev)->mode_info.funcs->page_flip((adev), (crtc), (base), (async)))
+#define gsgpu_display_page_flip_get_scanoutpos(adev, crtc, vbl, pos) ((adev)->mode_info.funcs->page_flip_get_scanoutpos((adev), (crtc), (vbl), (pos)))
+#define gsgpu_emit_copy_buffer(adev, ib, s, d, b) ((adev)->mman.buffer_funcs->emit_copy_buffer((ib),  (s), (d), (b)))
+#define gsgpu_emit_fill_buffer(adev, ib, s, d, b) ((adev)->mman.buffer_funcs->emit_fill_buffer((ib), (s), (d), (b)))
+#define gsgpu_gfx_get_gpu_clock_counter(adev) ((adev)->gfx.funcs->get_gpu_clock_counter((adev)))
+#define gsgpu_psp_check_fw_loading_status(adev, i) ((adev)->firmware.funcs->check_fw_loading_status((adev), (i)))
+#define gsgpu_gfx_select_me_pipe_q(adev, me, pipe, q) ((adev)->gfx.funcs->select_me_pipe_q((adev), (me), (pipe), (q)))
 
 /* Common functions */
 int gsgpu_device_gpu_recover(struct gsgpu_device *adev,
-			      struct gsgpu_job* job, bool force);
+			      struct gsgpu_job *job, bool force);
 void gsgpu_device_pci_config_reset(struct gsgpu_device *adev);
 bool gsgpu_device_need_post(struct gsgpu_device *adev);
 void gsgpu_display_update_priority(struct gsgpu_device *adev);

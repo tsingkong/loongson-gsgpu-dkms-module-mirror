@@ -25,7 +25,7 @@ int gsgpu_zip_meta_vram_alloc(struct gsgpu_device *adev)
 
 	if (adev->zip_meta.robj)
 		return 0;
-		
+
 	memset(&bp, 0, sizeof(bp));
 	bp.size = adev->zip_meta.table_size;
 	bp.byte_align = GSGPU_GEM_COMPRESSED_SIZE;
@@ -35,7 +35,6 @@ int gsgpu_zip_meta_vram_alloc(struct gsgpu_device *adev)
 	bp.type = ttm_bo_type_kernel;
 	bp.resv = NULL;
 	r = gsgpu_bo_create(adev, &bp, &adev->zip_meta.robj);
-	
 	if (r) {
 		return r;
 	}
@@ -139,7 +138,7 @@ int gsgpu_zip_meta_unbind(struct gsgpu_device *adev, uint64_t offset,
  * Returns 0 for success, -EINVAL for failure.
  */
 uint64_t gsgpu_zip_meta_map(struct gsgpu_device *adev, uint64_t start)
-{	
+{
 	return 0;
 }
 
@@ -161,7 +160,7 @@ int gsgpu_zip_meta_bind(struct gsgpu_device *adev, uint64_t offset,
 		     uint64_t flags)
 {
 #ifdef CONFIG_DRM_GSGPU_ZIP_DEBUGFS
-	unsigned i,t,p;
+	unsigned i, t, p;
 #endif
 
 #ifdef CONFIG_DRM_GSGPU_ZIP_DEBUGFS

@@ -1,16 +1,55 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include "gsgpu.h"
 #include "gsgpu_dc_vbios.h"
 #include "gsgpu_dc_resource.h"
 
 #define VBIOS_START 0x1000
-#define VBIOS_SIZE 0x400000
+#define VBIOS_SIZE 0x40000
+#define VBIOS_OFFSET 0x100000
 #define VBIOS_DESC_OFFSET 0x6000
 #define VBIOS_DESC_TOTAL 0xA00
+#define LOONGSON_VBIOS_TITLE "Loongson-VBIOS"
+
+static bool is_valid_vbios(void *vbios)
+{
+	struct vbios_info *vb_header = NULL;
+	u8 header[16] = {0};
+
+	vb_header = (struct vbios_info *)vbios;
+	memcpy(&header[0], vb_header->title, sizeof(vb_header->title));
+
+	if (0 != memcmp((char *)&header[0],
+			LOONGSON_VBIOS_TITLE,
+			strlen(LOONGSON_VBIOS_TITLE))) {
+		DRM_WARN("vbios signature is invation!\n");
+		return false;
+	}
+
+	return true;
+}
+
+static bool read_bios_from_vram(struct gsgpu_dc *dc)
+{
+	void *bios;
+	u64 vbios_addr = dc->adev->gmc.aper_base +
+			 dc->adev->gmc.aper_size - VBIOS_OFFSET;
+	bios = ioremap(vbios_addr, VBIOS_SIZE);
+	if (!bios)
+		return false;
+
+	dc->vbios->vbios_ptr = kmalloc(VBIOS_SIZE, GFP_KERNEL);
+	if (!dc->vbios->vbios_ptr)
+		return false;
+
+	memcpy(dc->vbios->vbios_ptr, bios, VBIOS_SIZE);
+	iounmap(bios);
+	if (!is_valid_vbios(dc->vbios->vbios_ptr)) {
+		kfree(dc->vbios->vbios_ptr);
+		return false;
+	}
+
+	DRM_INFO("GSGPU get vbios from vram Success \n");
+	return true;
+}
 
 static bool read_bios_from_sysconf(struct gsgpu_dc *dc)
 {
@@ -22,7 +61,7 @@ static bool read_bios_from_sysconf(struct gsgpu_dc *dc)
 		return false;
 
 	memcpy(dc->vbios->vbios_ptr, (void *)loongson_sysconf.vgabios_addr, VBIOS_SIZE);
-	DRM_INFO("GSGPU get vbios from sysconf Sucess \n");
+	DRM_INFO("GSGPU get vbios from sysconf Success \n");
 
 	return true;
 }
@@ -63,8 +102,11 @@ static bool read_bios_from_acpi(struct gsgpu_device *adev)
 
 static bool get_vbios_data(struct gsgpu_dc *dc)
 {
+	if (read_bios_from_vram(dc))
+		goto success;
+
 	if (read_bios_from_acpi(dc))
-                goto success;
+		goto success;
 
 	if (read_bios_from_sysconf(dc))
 		goto success;
@@ -84,7 +126,7 @@ static bool parse_vbios_header(struct vbios_desc *vb_desc, struct gsgpu_vbios *v
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_header_resource)
 		ret = vbios->funcs->create_header_resource(vbios, data, vb_desc->size);
@@ -100,7 +142,7 @@ static bool parse_vbios_crtc(struct vbios_desc *vb_desc, struct gsgpu_vbios *vbi
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_crtc_resource)
 		ret = vbios->funcs->create_crtc_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -116,7 +158,7 @@ static bool parse_vbios_connector(struct vbios_desc *vb_desc, struct gsgpu_vbios
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_connecor_resource)
 		ret = vbios->funcs->create_connecor_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -132,7 +174,7 @@ static bool parse_vbios_encoder(struct vbios_desc *vb_desc, struct gsgpu_vbios *
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_encoder_resource)
 		ret = vbios->funcs->create_encoder_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -148,7 +190,7 @@ static bool parse_vbios_i2c(struct vbios_desc *vb_desc, struct gsgpu_vbios *vbio
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_i2c_resource)
 		ret = vbios->funcs->create_i2c_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -164,7 +206,7 @@ static bool parse_vbios_pwm(struct vbios_desc *vb_desc, struct gsgpu_vbios *vbio
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_pwm_resource)
 		ret = vbios->funcs->create_pwm_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -180,7 +222,7 @@ static bool parse_vbios_gpu(struct vbios_desc *vb_desc, struct gsgpu_vbios *vbio
 	if (IS_ERR_OR_NULL(vb_desc) || IS_ERR_OR_NULL(vbios))
 		return ret;
 
-	data = (u8*)vbios->vbios_ptr + vb_desc->offset;
+	data = (u8 *)vbios->vbios_ptr + vb_desc->offset;
 
 	if (vbios->funcs && vbios->funcs->create_gpu_resource)
 		ret = vbios->funcs->create_gpu_resource(vbios, data, vb_desc->link, vb_desc->size);
@@ -236,11 +278,11 @@ static inline void parse_vbios_info(struct gsgpu_vbios *vbios)
 	if (IS_ERR_OR_NULL(vbios))
 		return;
 
-	header = vbios->funcs->get_header_resource(vbios);;
+	header = vbios->funcs->get_header_resource(vbios);
 	if (IS_ERR_OR_NULL(header))
 		return;
 
-	vb_info = (struct vbios_info*)vbios->vbios_ptr;
+	vb_info = (struct vbios_info *)vbios->vbios_ptr;
 	header->links = vb_info->link_num;
 	header->ver_majro = vb_info->version_major;
 	header->ver_minor = vb_info->version_minor;
@@ -273,7 +315,7 @@ static bool dc_vbios_parse(struct gsgpu_vbios *vbios)
 
 	func = get_parse_func(desc);
 	if (IS_ERR_OR_NULL(func)) {
-		pr_err("vbios get header parser funcs err %pf \n",func);
+		pr_err("vbios get header parser funcs err %pf \n", func);
 		return false;
 	}
 
@@ -423,6 +465,7 @@ static bool vbios_create_encoder_resource(struct gsgpu_vbios *vbios, void *data,
 	encoder->type = vb_encoder.type;
 	encoder->config_type = vb_encoder.config_type;
 	encoder->chip_addr = vb_encoder.chip_addr;
+	encoder->chip = vb_encoder.chip;
 
 	list_add_tail(&encoder->base.node, &vbios->resource_list);
 
@@ -490,6 +533,12 @@ static bool vbios_create_i2c_resource(struct gsgpu_vbios *vbios, void *data, u32
 	list_add_tail(&i2c_resource->base.node, &vbios->resource_list);
 
 	return true;
+}
+
+static bool vbios_create_gpio_resource(struct gsgpu_vbios *vbios,
+				       void *data, u32 link, u32 size)
+{
+	return false;
 }
 
 static bool vbios_create_pwm_resource(struct gsgpu_vbios *vbios, void *data, u32 link, u32 size)
@@ -660,6 +709,12 @@ static struct i2c_resource *vbios_get_i2c_resource(struct gsgpu_vbios *vbios, u3
 	return NULL;
 }
 
+static struct gpio_resource
+*vbios_get_gpio_resource(struct gsgpu_vbios *vbios, u32 link)
+{
+	return NULL;
+}
+
 static struct pwm_resource *vbios_get_pwm_resource(struct gsgpu_vbios *vbios, u32 link)
 {
 	struct resource_object *entry;
@@ -710,8 +765,8 @@ static struct vbios_funcs vbios_funcs = {
 	.create_crtc_resource = vbios_create_crtc_resource,
 	.create_encoder_resource = vbios_create_encoder_resource,
 	.create_connecor_resource = vbios_create_connector_resource,
-	.create_i2c_resource =  vbios_create_i2c_resource,
-//TODO	.create_gpio_resource = vbios_create_gpio_resource,
+	.create_i2c_resource = vbios_create_i2c_resource,
+	.create_gpio_resource = vbios_create_gpio_resource,
 	.create_pwm_resource = vbios_create_pwm_resource,
 	.create_gpu_resource = vbios_create_gpu_resource,
 
@@ -720,10 +775,31 @@ static struct vbios_funcs vbios_funcs = {
 	.get_encoder_resource = vbios_get_encoder_resource,
 	.get_connector_resource = vbios_get_connector_resource,
 	.get_i2c_resource = vbios_get_i2c_resource,
-//	.get_gpio_resource = vbios_get_gpio_resource,
+	.get_gpio_resource = vbios_get_gpio_resource,
 	.get_pwm_resource = vbios_get_pwm_resource,
 	.get_gpu_resource = vbios_get_gpu_resource,
 };
+
+u8 gsgpu_vbios_checksum(const u8 *data, int size)
+{
+	u8 sum = 0;
+
+	while (size--)
+		sum += *data++;
+	return sum;
+}
+
+u32 gsgpu_vbios_version(struct gsgpu_vbios *vbios)
+{
+	struct vbios_info *vb_info = vbios->vbios_ptr;
+	u32 minor, major, version;
+
+	major = vb_info->version_major;
+	minor = vb_info->version_minor;
+	version = major * 10 + minor;
+
+	return version;
+}
 
 static bool dc_vbios_create(struct gsgpu_vbios *vbios)
 {
@@ -789,6 +865,8 @@ void dc_vbios_show(struct gsgpu_vbios *vbios)
 {
 	struct header_resource *header_res = NULL;
 	struct crtc_resource *crtc_res;
+	struct gpu_resource *gpu_res;
+	char *vram_type[] = {"DDR3", "DDR4", "DDR5"};
 	int i;
 
 	header_res = dc_get_vbios_resource(vbios, 0, GSGPU_RESOURCE_HEADER);
@@ -797,8 +875,8 @@ void dc_vbios_show(struct gsgpu_vbios *vbios)
 
 	DRM_INFO("GSGPU vbios header info:\n");
 	DRM_INFO("ver:%d.%d links%d max_planes%d name %s\n",
-		 header_res->ver_majro, header_res->ver_minor, 
-		 header_res->links, header_res->max_planes, header_res->name);
+		header_res->ver_majro, header_res->ver_minor,
+		header_res->links, header_res->max_planes, header_res->name);
 	DRM_INFO("oem-vendor %s oem-product %s\n", header_res->oem_vendor,
 		 header_res->oem_product);
 
@@ -809,6 +887,18 @@ void dc_vbios_show(struct gsgpu_vbios *vbios)
 			 crtc_res->max_width, crtc_res->max_height);
 	}
 
+	gpu_res = dc_get_vbios_resource(vbios, 0, GSGPU_RESOURCE_GPU);
+	if (!gpu_res)
+		DRM_WARN("The video memory and gpu information is not obtained from the vbios! \n");
+	else {
+		DRM_INFO("GSGPU vram type:%s, bit width:%d#bit",
+			vram_type[gpu_res->vram_type], gpu_res->bit_width);
+		DRM_INFO("capacity:%d#MB, vram freq:%dMHZ\n",
+			gpu_res->cap, gpu_res->freq);
+		DRM_INFO("gpu shaders num:%d, shader freq:%d#MHZ, freq count:%d",
+			gpu_res->shaders_num, gpu_res->shaders_freq,
+			gpu_res->count_freq);
+	}
 }
 
 bool dc_vbios_init(struct gsgpu_dc *dc)
@@ -831,7 +921,7 @@ bool dc_vbios_init(struct gsgpu_dc *dc)
 	if (!status) {
 		DRM_ERROR("GSGPU Can not get vbios from sysconf!!!\n");
 	} else {
-		header = dc->vbios->vbios_ptr;;
+		header = dc->vbios->vbios_ptr;
 	}
 
 //TODO: Add vbios default when read bios failed.
@@ -863,4 +953,124 @@ void dc_vbios_exit(struct gsgpu_vbios *vbios)
 
 	kvfree(vbios);
 	vbios = NULL;
+}
+
+bool check_vbios_info(void)
+{
+	struct vbios_desc *start;
+	struct vbios_desc *desc;
+	struct vbios_header *vb_header;
+	struct vbios_encoder vb_encoder;
+	struct acpi_table_header *hdr;
+	struct acpi_viat_table *viat;
+	acpi_size tbl_size;
+	enum desc_type desc_type;
+	u32 encoder_size;
+	void *data;
+	u8 *vbios_ptr;
+	void *vaddr;
+	bool support = false;
+	bool get_vbios = false;
+
+	struct pci_dev *pdev = pci_get_device(0x0014, 0x7A25, NULL);
+	resource_size_t vram_base = pci_resource_start(pdev, 2);
+	resource_size_t vram_size = pci_resource_len(pdev, 2);
+	u64 vbios_addr = vram_base + vram_size - VBIOS_OFFSET;
+	vaddr = ioremap(vbios_addr, VBIOS_SIZE);
+	if (!vaddr)
+		goto acpi;
+
+	vbios_ptr = kmalloc(VBIOS_SIZE, GFP_KERNEL);
+	if (!vbios_ptr) {
+		iounmap(vaddr);
+		goto acpi;
+	}
+
+	memcpy(vbios_ptr, vaddr, VBIOS_SIZE);
+	iounmap(vaddr);
+	if (!is_valid_vbios((void *)vbios_ptr)) {
+		kfree(vbios_ptr);
+		get_vbios = false;
+	} else
+		get_vbios = true;
+
+acpi:
+	if (!get_vbios) {
+#ifdef CONFIG_ACPI
+		if (!ACPI_SUCCESS(acpi_get_table("VIAT", 1, &hdr)))
+			goto sysconf;
+
+		tbl_size = hdr->length;
+		if (tbl_size != sizeof(struct acpi_viat_table))
+			goto sysconf;
+
+		viat = (struct acpi_viat_table *)hdr;
+		vbios_ptr = kmalloc(VBIOS_SIZE, GFP_KERNEL);
+		if (!vbios_ptr)
+			goto sysconf;
+
+		vaddr = phys_to_virt(viat->vbios_addr);
+		memcpy(vbios_ptr, vaddr, VBIOS_SIZE);
+
+		DRM_DEBUG_DRIVER("Get vbios from ACPI success!\n");
+		get_vbios = true;
+#else
+		get_vbios = false;
+#endif
+	}
+
+sysconf:
+	if (!get_vbios) {
+		if (!loongson_sysconf.vgabios_addr)
+			return false;
+
+		vbios_ptr = kmalloc(VBIOS_SIZE, GFP_KERNEL);
+		if (!vbios_ptr)
+			return false;
+
+		memcpy(vbios_ptr, (void *)loongson_sysconf.vgabios_addr,
+		       VBIOS_SIZE);
+	}
+
+	desc = (struct vbios_desc *)(vbios_ptr + 0x6000);
+	vb_header = (struct vbios_header *)(vbios_ptr + desc->offset);
+	start = (struct vbios_desc *)(vbios_ptr + vb_header->desc_offset);
+	desc = (struct vbios_desc *)(vbios_ptr + vb_header->desc_offset);
+	while (1) {
+		desc_type = desc->type;
+		if (desc_type != desc_encoder) {
+			desc++;
+			continue;
+		}
+
+		if (desc_type == desc_max ||
+		    ((desc - start) > vb_header->desc_size) ||
+		    ((desc - start) > VBIOS_DESC_TOTAL))
+			break;
+
+		data = (u8 *)vbios_ptr + desc->offset;
+		encoder_size = sizeof(struct vbios_encoder);
+		memset(&vb_encoder, 0xff, min(desc->size, encoder_size));
+		memcpy(&vb_encoder, data, min(desc->size, encoder_size));
+		DRM_DEBUG_DRIVER("vbios desc type:%d encoder_chip:0x%x\n",
+				 desc->type, vb_encoder.chip);
+
+		switch (vb_encoder.chip) {
+		case INTERNAL_DVO:
+		case INTERNAL_HDMI:
+		case EDP_LT9721:
+		case EDP_LT6711:
+		case LVDS_LT8619:
+			support = true;
+			break;
+		default:
+			kfree(vbios_ptr);
+			return false;
+		}
+
+		desc++;
+	}
+
+	kfree(vbios_ptr);
+	return support;
 }

@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include <linux/slab.h>
 #include <drm/drmP.h>
 #include "gsgpu.h"
@@ -12,6 +7,7 @@
 #include "gsgpu_zip.h"
 #include "gsgpu_gfx.h"
 #include "gsgpu_xdma.h"
+#include "gsgpu_dc_reg.h"
 
 static u32 gsgpu_get_clk(struct gsgpu_device *adev)
 {
@@ -22,7 +18,20 @@ static u32 gsgpu_get_clk(struct gsgpu_device *adev)
 
 static void gsgpu_vga_set_state(struct gsgpu_device *adev, bool state)
 {
-	DRM_DEBUG_DRIVER("%s Not implemented\n", __func__);
+	return;
+/* TODO: In this function we should be enable\disable GPU&DC */
+/*	u32 conf_reg;
+	u32 i;
+
+	for (i = 0; i < adev->mode_info.num_crtc; i++) {
+		conf_reg = dc_readl(adev, CURRENT_REG(DC_CRTC_CFG_REG, i));
+		if (state)
+			conf_reg |= CRTC_CFG_ENABLE;
+		else
+			conf_reg &= ~CRTC_CFG_ENABLE;
+		dc_writel(adev, CURRENT_REG(DC_CRTC_CFG_REG, i), conf_reg);
+	}
+*/
 }
 
 static bool gsgpu_read_bios_from_rom(struct gsgpu_device *adev,
@@ -89,8 +98,7 @@ static bool gsgpu_need_full_reset(struct gsgpu_device *adev)
 	}
 }
 
-static const struct gsgpu_asic_funcs gsgpu_asic_funcs =
-{
+static const struct gsgpu_asic_funcs gsgpu_asic_funcs = {
 	.read_bios_from_rom = &gsgpu_read_bios_from_rom,
 	.read_register = &gsgpu_read_register,
 	.reset = &gsgpu_reset,
@@ -179,8 +187,7 @@ static const struct gsgpu_ip_funcs gsgpu_common_ip_funcs = {
 	.soft_reset = gsgpu_common_soft_reset,
 };
 
-static const struct gsgpu_ip_block_version gsgpu_common_ip_block =
-{
+static const struct gsgpu_ip_block_version gsgpu_common_ip_block = {
 	.type = GSGPU_IP_BLOCK_TYPE_COMMON,
 	.major = 1,
 	.minor = 0,

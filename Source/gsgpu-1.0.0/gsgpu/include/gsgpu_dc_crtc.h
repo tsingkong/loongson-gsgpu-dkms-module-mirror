@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __DC_CRTC_H__
 #define __DC_CRTC_H__
 
@@ -12,7 +11,7 @@ struct gsgpu_dc_crtc {
 };
 
 enum fb_color_format {
-	DC_FB_FORMAT_NONE =0,
+	DC_FB_FORMAT_NONE = 0,
 	DC_FB_FORMAT12,
 	DC_FB_FORMAT15,
 	DC_FB_FORMAT16,
@@ -40,7 +39,7 @@ int dc_crtc_get_scanoutpos(struct gsgpu_device *adev, int crtc_num, u32 *vbl, u3
 
 void dc_crtc_destroy(struct gsgpu_dc_crtc *crtc);
 bool dc_crtc_enable(struct gsgpu_crtc *acrtc, bool enable);
-bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc , struct dc_timing_info *timing);
+bool dc_crtc_timing_set(struct gsgpu_dc_crtc *crtc, struct dc_timing_info *timing);
 bool dc_crtc_vblank_enable(struct gsgpu_dc_crtc *crtc, bool enable);
 u32 dc_crtc_get_vblank_counter(struct gsgpu_dc_crtc *crtc);
 bool dc_crtc_vblank_ack(struct gsgpu_dc_crtc *crtc);

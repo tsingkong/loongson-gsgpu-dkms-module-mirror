@@ -1,30 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Dave Airlie
- *          Alex Deucher
- *          Jerome Glisse
- */
 #include <linux/power_supply.h>
 #include <linux/kthread.h>
 #include <linux/console.h>
@@ -36,10 +9,12 @@
 #include <linux/vgaarb.h>
 #include <linux/vga_switcheroo.h>
 #include <linux/efi.h>
+#include <loongson-pch.h>
 #include "gsgpu.h"
 #include "gsgpu_trace.h"
 #include "gsgpu_cp.h"
 #include "gsgpu_common.h"
+#include "gsgpu_xdma.h"
 #include <linux/pci.h>
 #include <linux/firmware.h>
 #include "gsgpu_pm.h"
@@ -49,8 +24,6 @@
 static const char *gsgpu_family_name[] = {
 	"LG100",
 };
-
-static void gsgpu_device_get_pcie_info(struct gsgpu_device *adev);
 
 /**
  * gsgpu_cmd_exec
@@ -66,10 +39,8 @@ static void gsgpu_device_get_pcie_info(struct gsgpu_device *adev);
 uint64_t gsgpu_cmd_exec(struct gsgpu_device *adev, uint32_t cmd, uint32_t arg0, uint32_t arg1)
 {
 	uint64_t ret;
-	int sts;
-	unsigned i;
 
-	if(gsgpu_cp_wait_done(adev) == false)
+	if (gsgpu_cp_wait_done(adev) == false)
 		return  ~0ULL;
 
 	writel(GSCMD_STS_NULL, ((void __iomem *)adev->rmmio) + GSGPU_STATUS);
@@ -80,8 +51,7 @@ uint64_t gsgpu_cmd_exec(struct gsgpu_device *adev, uint32_t cmd, uint32_t arg0, 
 
 	writel(1, ((void __iomem *)adev->rmmio) + GSGPU_EC_INT);
 
-
-	if(gsgpu_cp_wait_done(adev) == false)
+	if (gsgpu_cp_wait_done(adev) == false)
 		return  ~0ULL;
 
 	ret = readl(((void __iomem *)adev->rmmio) + GSGPU_RETURN0);
@@ -135,7 +105,8 @@ uint32_t gsgpu_mm_rreg(struct gsgpu_device *adev, uint32_t reg,
  *
  * Returns the 8 bit value from the offset specified.
  */
-uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset) {
+uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset)
+{
 	if (offset < adev->rmmio_size)
 		return (readb(adev->rmmio + offset));
 	BUG();
@@ -156,7 +127,8 @@ uint8_t gsgpu_mm_rreg8(struct gsgpu_device *adev, uint32_t offset) {
  *
  * Writes the value specified to the offset specified.
  */
-void gsgpu_mm_wreg8(struct gsgpu_device *adev, uint32_t offset, uint8_t value) {
+void gsgpu_mm_wreg8(struct gsgpu_device *adev, uint32_t offset, uint8_t value)
+{
 	if (offset < adev->rmmio_size)
 		writeb(value, adev->rmmio + offset);
 	else
@@ -183,46 +155,6 @@ void gsgpu_mm_wreg(struct gsgpu_device *adev, uint32_t reg, uint32_t v)
 		writel(v, ((void __iomem *)adev->rmmio) + reg);
 	} else
 		BUG();
-}
-
-/**
- * gsgpu_block_invalid_rreg - dummy reg read function
- *
- * @adev: gsgpu device pointer
- * @block: offset of instance
- * @reg: offset of register
- *
- * Dummy register read function.  Used for register blocks
- * that certain asics don't have (all asics).
- * Returns the value in the register.
- */
-static uint32_t gsgpu_block_invalid_rreg(struct gsgpu_device *adev,
-					  uint32_t block, uint32_t reg)
-{
-	DRM_ERROR("Invalid callback to read register 0x%04X in block 0x%04X\n",
-		  reg, block);
-	BUG();
-	return 0;
-}
-
-/**
- * gsgpu_block_invalid_wreg - dummy reg write function
- *
- * @adev: gsgpu device pointer
- * @block: offset of instance
- * @reg: offset of register
- * @v: value to write to the register
- *
- * Dummy register read function.  Used for register blocks
- * that certain asics don't have (all asics).
- */
-static void gsgpu_block_invalid_wreg(struct gsgpu_device *adev,
-				      uint32_t block,
-				      uint32_t reg, uint32_t v)
-{
-	DRM_ERROR("Invalid block callback to write register 0x%04X in block 0x%04X with 0x%08X\n",
-		  reg, block, v);
-	BUG();
 }
 
 /**
@@ -274,7 +206,7 @@ void gsgpu_device_program_register_sequence(struct gsgpu_device *adev,
 	if (array_size % 3)
 		return;
 
-	for (i = 0; i < array_size; i +=3) {
+	for (i = 0; i < array_size; i += 3) {
 		reg = registers[i + 0];
 		and_mask = registers[i + 1];
 		or_mask = registers[i + 2];
@@ -627,9 +559,9 @@ static void gsgpu_device_check_arguments(struct gsgpu_device *adev)
 {
 	if (gsgpu_sched_jobs < 4) {
 		dev_warn(adev->dev, "sched jobs (%d) must be at least 4\n",
-			 gsgpu_sched_jobs);
+			gsgpu_sched_jobs);
 		gsgpu_sched_jobs = 4;
-	} else if (!is_power_of_2(gsgpu_sched_jobs)){
+	} else if (!is_power_of_2(gsgpu_sched_jobs)) {
 		dev_warn(adev->dev, "sched jobs (%d) must be a power of 2\n",
 			 gsgpu_sched_jobs);
 		gsgpu_sched_jobs = roundup_pow_of_two(gsgpu_sched_jobs);
@@ -1094,19 +1026,19 @@ static int gsgpu_device_ip_fini(struct gsgpu_device *adev)
  */
 static void gsgpu_device_ip_late_init_func_handler(struct work_struct *work)
 {
+#if 1
+	return;
+#else
 	struct gsgpu_device *adev =
 		container_of(work, struct gsgpu_device, late_init_work.work);
 	int r;
 
-#if 1
-	return;
-#else
 	r = gsgpu_ib_ring_tests(adev);
 	if (r)
 		DRM_ERROR("ib ring test failed (%d).\n", r);
 
 	r = gsgpu_ring_test_xdma(&adev->xdma.instance[0].ring, msecs_to_jiffies(5000));
-	if (r) 
+	if (r)
 		DRM_ERROR("xdma test failed (%d).\n", r);
 #endif
 }
@@ -1314,7 +1246,7 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 		       struct pci_dev *pdev,
 		       uint32_t flags)
 {
-	int r, i;
+	int r;
 	bool runtime = false;
 	u32 max_MBps;
 
@@ -1369,7 +1301,15 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 			  gsgpu_device_ip_late_init_func_handler);
 
 	/* pci get dc revision */
-	pci_read_config_byte(adev->loongson_dc, 0x8, &adev->chip_revision);
+	pci_read_config_byte(adev->loongson_dc, 0x8, &adev->dc_revision);
+	DRM_DEBUG_DRIVER("GSGPU dc revision id 0x%x\n", adev->dc_revision);
+	if (adev->dc_revision == 0x10) {
+		adev->chip = dev_2k2000;
+		DRM_INFO("Set 2K2000 device in gsgpu driver\n");
+	} else if (adev->dc_revision < 0x10) {
+		adev->chip = dev_7a2000;
+		DRM_INFO("Set 7A2000 device in gsgpu driver\n");
+	}
 
 	adev->rmmio_base = pci_resource_start(adev->pdev, 0);
 	adev->rmmio_size = pci_resource_len(adev->pdev, 0);
@@ -1390,10 +1330,13 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 		return -ENOMEM;
 	}
 
-	DRM_INFO("loongson dc register mmio base: 0x%08X\n", (uint32_t)adev->loongson_dc_rmmio_base);
-	DRM_INFO("loongson dc register mmio size: %u\n", (unsigned)adev->loongson_dc_rmmio_size);
+	DRM_INFO("gsgpu dc register mmio base: 0x%08X\n", (uint32_t)adev->loongson_dc_rmmio_base);
+	DRM_INFO("gsgpu dc register mmio size: %u\n", (unsigned)adev->loongson_dc_rmmio_size);
 
-	gsgpu_device_get_pcie_info(adev);
+	adev->io_base = ioremap(LS7A_CHIPCFG_REG_BASE, 0xf);
+	if (adev->io_base == NULL)
+		return -ENOMEM;
+	DRM_INFO("gsgpu dc io base: 0x%lx\n", (unsigned long)adev->io_base);
 
 	/* early init functions */
 	r = gsgpu_device_ip_early_init(adev);
@@ -1403,11 +1346,9 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 	/* if we have > 1 VGA cards, then disable the gsgpu VGA resources */
 	/* this will fail for cards that aren't VGA class devices, just
 	 * ignore it */
-	vga_client_register(adev->pdev, adev, NULL, gsgpu_device_vga_set_decode);
-
-	if (!pci_is_thunderbolt_attached(adev->pdev))
-		vga_switcheroo_register_client(adev->pdev,
-					       &gsgpu_switcheroo_ops, runtime);
+	vga_client_register(adev->loongson_dc, adev, NULL, gsgpu_device_vga_set_decode);
+	vga_switcheroo_register_client(adev->pdev,
+				       &gsgpu_switcheroo_ops, runtime);
 
 	/* Fence driver */
 	r = gsgpu_fence_driver_init(adev);
@@ -1497,7 +1438,6 @@ int gsgpu_device_init(struct gsgpu_device *adev,
 		goto failed;
 	}
 
-	extern void xdma_ring_test_xdma_loop(struct gsgpu_ring *ring, long timeout);
 	xdma_ring_test_xdma_loop(&adev->xdma.instance[0].ring, msecs_to_jiffies(5000));
 
 	return 0;
@@ -1521,7 +1461,6 @@ void gsgpu_device_fini(struct gsgpu_device *adev)
 {
 	int r;
 
-	DRM_INFO("gsgpu: finishing device.\n");
 	adev->shutdown = true;
 	/* disable all interrupts */
 	gsgpu_irq_disable_all(adev);
@@ -1543,11 +1482,12 @@ void gsgpu_device_fini(struct gsgpu_device *adev)
 
 	kfree(adev->bios);
 	adev->bios = NULL;
-	if (!pci_is_thunderbolt_attached(adev->pdev))
-		vga_switcheroo_unregister_client(adev->pdev);
+
+	vga_switcheroo_unregister_client(adev->pdev);
+
 	if (adev->flags & GSGPU_IS_PX)
 		vga_switcheroo_fini_domain_pm_ops(adev->dev);
-	vga_client_register(adev->pdev, NULL, NULL, NULL);
+	vga_client_register(adev->loongson_dc, NULL, NULL, NULL);
 
 	iounmap(adev->rmmio);
 	adev->rmmio = NULL;
@@ -1595,13 +1535,13 @@ static int gsgpu_zip_gem_bo_validate(int id, void *ptr, void *data)
 
 		r = ttm_bo_validate(&bo->tbo, &bo->placement, &ctx);
 		if (unlikely(r)) {
-			DRM_ERROR("gsgpu_zip_gem_bo_valid failed  tbo=0x%x r=0x%x\n", &bo->tbo, r);
+			DRM_ERROR("gsgpu zip bo validate failed %d\n", r);
 		}
 
 		gsgpu_bo_unreserve(bo);
 
 	}
-	
+
 	return 0;
 }
 
@@ -1631,11 +1571,11 @@ static int gsgpu_zip_gem_bo_evict(int id, void *ptr, void *data)
 
 		r = ttm_bo_validate(&bo->tbo, &bo->placement, &ctx);
 		if (unlikely(r))
-			DRM_ERROR("gsgpu_zip_gem_bo_evict failed  tbo=0x%x r=0x%x\n", &bo->tbo, r);
+			DRM_ERROR("gsgpu zip bo evict failed %d\n", r);
 
 		gsgpu_bo_unreserve(bo);
 	}
-	
+
 	return 0;
 }
 
@@ -1749,7 +1689,7 @@ int gsgpu_device_resume(struct drm_device *dev, bool resume, bool fbcon)
 		DRM_ERROR(" gsgpu_cp_gfx_load_microcode fail\n");
 		return r;
 	}
-		
+
 	r = gsgpu_cp_enable(adev, true);
 	if (r) {
 		DRM_ERROR(" gsgpu_cp_enable fail\n");
@@ -2223,25 +2163,10 @@ int gsgpu_device_gpu_recover(struct gsgpu_device *adev,
 		/* bad news, how to tell it to userspace ? */
 		dev_info(adev->dev, "GPU reset(%d) failed\n", atomic_read(&adev->gpu_reset_counter));
 	} else {
-		dev_info(adev->dev, "GPU reset(%d) succeeded!\n",atomic_read(&adev->gpu_reset_counter));
+		dev_info(adev->dev, "GPU reset(%d) succeeded!\n", atomic_read(&adev->gpu_reset_counter));
 	}
 
 	adev->in_gpu_reset = 0;
 	mutex_unlock(&adev->lock_reset);
 	return r;
 }
-
-/**
- * gsgpu_device_get_pcie_info - fence pcie info about the PCIE slot
- *
- * @adev: gsgpu_device pointer
- *
- * Fetchs and stores in the driver the PCIE capabilities (gen speed
- * and lanes) of the slot the device is in. Handles APUs and
- * virtualized environments where PCIE config space may not be available.
- */
-static void gsgpu_device_get_pcie_info(struct gsgpu_device *adev)
-{
-
-}
-

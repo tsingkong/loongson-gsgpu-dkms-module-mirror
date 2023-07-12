@@ -1,47 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Dave Airlie
- *          Alex Deucher
- *          Jerome Glisse
- */
-
-/**
- * DOC: Interrupt Handling
- *
- * Interrupts generated within GPU hardware raise interrupt requests that are
- * passed to gsgpu IRQ handler which is responsible for detecting source and
- * type of the interrupt and dispatching matching handlers. If handling an
- * interrupt requires calling kernel functions that may sleep processing is
- * dispatched to work handlers.
- *
- * If MSI functionality is not disabled by module parameter then MSI
- * support will be enabled.
- *
- * For GPU interrupt sources that may be driven by another driver, IRQ domain
- * support is used (with mapping between virtual and hardware IRQs).
- */
-
 #include <linux/irq.h>
 #include <linux/pm_runtime.h>
 
@@ -54,7 +10,7 @@
 #include "gsgpu_trace.h"
 #include "gsgpu_dc_irq.h"
 #include "gsgpu_dc_reg.h"
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 #define GSGPU_WAIT_IDLE_TIMEOUT 200
 
@@ -145,6 +101,7 @@ static irqreturn_t gsgpu_dc_irq_handler(int irq, void *arg)
 	base = (unsigned long)(adev->loongson_dc_rmmio_base);
 
 	int_reg = dc_readl(adev, DC_INT_REG);
+	dc_writel(adev, DC_INT_REG, int_reg);
 	entry.client_id = SOC15_IH_CLIENTID_DCE;
 
 	int_reg &= 0xffff;

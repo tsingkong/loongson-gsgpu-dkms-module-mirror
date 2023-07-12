@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #ifndef __GSGPU_SHARED_H__
 #define __GSGPU_SHARED_H__
 

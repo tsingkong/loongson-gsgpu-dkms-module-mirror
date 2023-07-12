@@ -14,7 +14,7 @@
 
 static int gsgpu_cp_wait_for_idle(struct gsgpu_device *adev)
 {
-	if(gsgpu_cp_wait_done(adev) == true)
+	if (gsgpu_cp_wait_done(adev) == true)
 		return 0;
 
 	return -ETIMEDOUT;
@@ -34,7 +34,7 @@ int gsgpu_cp_enable(struct gsgpu_device *adev, bool enable)
 	}
 	WREG32(GSGPU_EC_CTRL, tmp);
 	mdelay(100);
-	if(enable)
+	if (enable)
 		return gsgpu_cp_wait_for_idle(adev);
 	else
 		return 0;
@@ -51,7 +51,6 @@ static int gsgpu_init_microcode(struct gsgpu_device *adev)
 	const char *chip_name;
 	char fw_name[30];
 	int err;
-	struct gsgpu_firmware_info *info = NULL;
 
 	DRM_DEBUG("\n");
 
@@ -83,34 +82,26 @@ out:
 
 int gsgpu_cp_gfx_load_microcode(struct gsgpu_device *adev)
 {
-	const struct gfx_firmware_header_v1_0 *cp_hdr;
 	const __le32 *fw_data;
 	unsigned i, fw_size, fw_wptr;
 
 	if (!adev->gfx.cp_fw)
 		return -EINVAL;
 
-	//cp_hdr = (const struct gfx_firmware_header_v1_0 *)
-	//	adev->gfx.cp_fw->data;
-
 	gsgpu_cp_enable(adev, false);
 
 	/* CP */
-	//fw_data = (const __le32 *)
-	//	(adev->gfx.cp_fw->data +
-	//	 le32_to_cpu(cp_hdr->header.ucode_array_offset_bytes));
-	//fw_size = le32_to_cpu(cp_hdr->header.ucode_size_bytes) / 4;
 	fw_data = (const __le32 *)(adev->gfx.cp_fw->data);
 	fw_size = adev->gfx.cp_fw->size;
 
-	if(fw_size > 0x10000)
+	if (fw_size > 0x10000)
 		return -EINVAL;
 
-	for (i = 0; i < fw_size; i+=4)
+	for (i = 0; i < fw_size; i += 4)
 		WREG32(GSGPU_FW_WPORT, le32_to_cpup(fw_data++));
 
 	fw_wptr = RREG32(GSGPU_FW_WPTR);
-	if(fw_size != fw_wptr)
+	if (fw_size != fw_wptr)
 		return -EINVAL;
 
 	return 0;

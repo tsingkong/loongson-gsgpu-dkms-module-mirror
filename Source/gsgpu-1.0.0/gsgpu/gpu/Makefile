@@ -1,32 +1,10 @@
-#
-# Copyright 2017 Advanced Micro Devices, Inc.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-# THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
-# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-# OTHER DEALINGS IN THE SOFTWARE.
-#
-#
-# Makefile for the drm device driver.  This driver provides support for the
-# Direct Rendering Infrastructure (DRI) in XFree86 4.1.0 and higher.
 
 FULL_LS_PATH=$(src)/..
 
-ccflags-y := -Iinclude/drm -I$(FULL_LS_PATH)/include/asic_reg \
-	-I$(FULL_LS_PATH)/include \
+ccflags-y := -I$(FULL_LS_PATH)/include \
+    -I$(FULL_LS_PATH)/../include \
+    -I$(FULL_LS_PATH)/../include/drm \
+    -I$(FULL_LS_PATH)/../include/uapi
 
 CFLAGS_gsgpu_fence.o += -O
 gsgpu-y := gsgpu_drv.o
@@ -56,13 +34,13 @@ gsgpu-y += gsgpu_zip.o
 # add IH block
 gsgpu-y += \
 	gsgpu_irq.o \
-	gsgpu_ih.o \
+	gsgpu_ih.o
 
 # add GFX block
 gsgpu-y += gsgpu_gfx.o
 
-# add async DMA block
-gsgpu-y += gsgpu_xdma.o 
+# add XDMA block
+gsgpu-y += gsgpu_xdma.o
 
 # GPU scheduler
 gsgpu-y += gsgpu_job.o
@@ -75,7 +53,5 @@ gsgpu-y += gsgpu_dc_drv.o gsgpu_dc_crtc.o gsgpu_dc_hdmi.o \
 	  gsgpu_dc_irq.o gsgpu_dc_plane.o gsgpu_dc_connector.o \
 	  gsgpu_dc_encoder.o gsgpu_dc_i2c.o  gsgpu_dc_cursor.o \
 	  gsgpu_dc_vbios.o
-
-include $(FULL_LS_PATH)/backport/Makefile
 
 obj-$(CONFIG_DRM_GSGPU)+= gsgpu.o

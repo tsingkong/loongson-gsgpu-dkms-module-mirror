@@ -1,27 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0 OR MIT
-/*
- * Copyright 2009 VMware, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Michel Dänzer
- */
 #include <drm/drmP.h>
 #include <drm/gsgpu_drm.h>
 #include "gsgpu.h"
@@ -154,10 +130,10 @@ static void gsgpu_do_test_moves(struct gsgpu_device *adev)
 					  i, *vram_start, gart_start,
 					  (unsigned long long)
 					  (gart_addr - adev->gmc.gart_start +
-					   (void*)gart_start - gtt_map),
+					   (void *)gart_start - gtt_map),
 					  (unsigned long long)
 					  (vram_addr - adev->gmc.vram_start +
-					   (void*)gart_start - gtt_map));
+					   (void *)gart_start - gtt_map));
 				gsgpu_bo_kunmap(vram_obj);
 				goto out_lclean_unpin;
 			}
@@ -199,10 +175,10 @@ static void gsgpu_do_test_moves(struct gsgpu_device *adev)
 					  i, *gart_start, vram_start,
 					  (unsigned long long)
 					  (vram_addr - adev->gmc.vram_start +
-					   (void*)vram_start - vram_map),
+					   (void *)vram_start - vram_map),
 					  (unsigned long long)
 					  (gart_addr - adev->gmc.gart_start +
-					   (void*)vram_start - vram_map));
+					   (void *)vram_start - vram_map));
 				gsgpu_bo_kunmap(gtt_obj[i]);
 				goto out_lclean_unpin;
 			}

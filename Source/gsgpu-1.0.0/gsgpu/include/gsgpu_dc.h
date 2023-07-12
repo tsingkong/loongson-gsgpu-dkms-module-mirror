@@ -33,6 +33,7 @@ struct gsgpu_link_info {
 	struct gsgpu_dc_i2c *i2c;
 	struct gsgpu_dc_encoder *encoder;
 	struct gsgpu_dc_connector *connector;
+	struct gsgpu_dc_bridge *bridge;
 };
 
 struct gsgpu_dc {
@@ -87,12 +88,13 @@ struct dc_timing_info {
 	s32 vtotal;
 	u32 stride;
 	u32 depth;
+	u32 use_dma32;
 };
 
 struct dc_cursor_move {
 	u32 hot_y;
 	u32 hot_x;
-	u32 x,y;
+	u32 x, y;
 	bool enable;
 };
 

@@ -1,30 +1,7 @@
-/*
- * Copyright 2014 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
-
 #include <drm/drmP.h>
 #include "gsgpu.h"
 #include "gsgpu_ih.h"
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 static void gsgpu_ih_set_interrupt_funcs(struct gsgpu_device *adev);
 
@@ -128,8 +105,8 @@ static bool ih_func_prescreen_iv(struct gsgpu_device *adev)
 	u16 pasid;
 
 	switch (le32_to_cpu(adev->irq.ih.ring[ring_index]) & 0xff) {
-	case VISLANDS30_IV_SRCID_GFX_PAGE_INV_FAULT:
-	case VISLANDS30_IV_SRCID_GFX_MEM_PROT_FAULT:
+	case GSGPU_SRCID_GFX_PAGE_INV_FAULT:
+	case GSGPU_SRCID_GFX_MEM_PROT_FAULT:
 		pasid = le32_to_cpu(adev->irq.ih.ring[ring_index + 2]) >> 16;
 		if (!pasid || gsgpu_vm_pasid_fault_credit(adev, pasid))
 			return true;
@@ -285,8 +262,7 @@ static void gsgpu_ih_set_interrupt_funcs(struct gsgpu_device *adev)
 		adev->irq.ih_funcs = &gsgpu_ih_funcs;
 }
 
-const struct gsgpu_ip_block_version gsgpu_ih_ip_block =
-{
+const struct gsgpu_ip_block_version gsgpu_ih_ip_block = {
 	.type = GSGPU_IP_BLOCK_TYPE_IH,
 	.major = 3,
 	.minor = 0,
@@ -462,80 +438,4 @@ restart_ih:
 		goto restart_ih;
 
 	return IRQ_HANDLED;
-}
-
-/**
- * gsgpu_ih_add_fault - Add a page fault record
- *
- * @adev: gsgpu device pointer
- * @key: 64-bit encoding of PASID and address
- *
- * This should be called when a retry page fault interrupt is
- * received. If this is a new page fault, it will be added to a hash
- * table. The return value indicates whether this is a new fault, or
- * a fault that was already known and is already being handled.
- *
- * If there are too many pending page faults, this will fail. Retry
- * interrupts should be ignored in this case until there is enough
- * free space.
- *
- * Returns 0 if the fault was added, 1 if the fault was already known,
- * -ENOSPC if there are too many pending faults.
- */
-int gsgpu_ih_add_fault(struct gsgpu_device *adev, u64 key)
-{
-	unsigned long flags;
-	int r = -ENOSPC;
-
-	if (WARN_ON_ONCE(!adev->irq.ih.faults))
-		/* Should be allocated in <IP>_ih_sw_init on GPUs that
-		 * support retry faults and require retry filtering.
-		 */
-		return r;
-
-	spin_lock_irqsave(&adev->irq.ih.faults->lock, flags);
-
-	/* Only let the hash table fill up to 50% for best performance */
-	if (adev->irq.ih.faults->count >= (1 << (GSGPU_PAGEFAULT_HASH_BITS-1)))
-		goto unlock_out;
-
-	r = chash_table_copy_in(&adev->irq.ih.faults->hash, key, NULL);
-	if (!r)
-		adev->irq.ih.faults->count++;
-
-	/* chash_table_copy_in should never fail unless we're losing count */
-	WARN_ON_ONCE(r < 0);
-
-unlock_out:
-	spin_unlock_irqrestore(&adev->irq.ih.faults->lock, flags);
-	return r;
-}
-
-/**
- * gsgpu_ih_clear_fault - Remove a page fault record
- *
- * @adev: gsgpu device pointer
- * @key: 64-bit encoding of PASID and address
- *
- * This should be called when a page fault has been handled. Any
- * future interrupt with this key will be processed as a new
- * page fault.
- */
-void gsgpu_ih_clear_fault(struct gsgpu_device *adev, u64 key)
-{
-	unsigned long flags;
-	int r;
-
-	if (!adev->irq.ih.faults)
-		return;
-
-	spin_lock_irqsave(&adev->irq.ih.faults->lock, flags);
-
-	r = chash_table_remove(&adev->irq.ih.faults->hash, key, NULL);
-	if (!WARN_ON_ONCE(r < 0)) {
-		adev->irq.ih.faults->count--;
-		WARN_ON_ONCE(adev->irq.ih.faults->count < 0);
-	}
-
-	spin_unlock_irqrestore(&adev->irq.ih.faults->lock, flags);
 }

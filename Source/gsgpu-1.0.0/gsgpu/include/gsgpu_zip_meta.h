@@ -41,4 +41,4 @@ int gsgpu_zip_meta_bind(struct gsgpu_device *adev, uint64_t offset,
 		     int pages, struct page **pagelist,
 		     dma_addr_t *dma_addr, uint64_t flags);
 
-#endif
+#endif /* __GSGPU_ZIP_META_H__ */

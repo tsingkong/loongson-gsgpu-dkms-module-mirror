@@ -1,34 +1,9 @@
-/*
- * Copyright 2020 Loongson Technology Co., Ltd.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
 #include <linux/firmware.h>
 #include <drm/drmP.h>
 #include <drm/drm_cache.h>
 #include "gsgpu.h"
 #include "gsgpu_mmu.h"
-
-/* TODO irq srcid need rewrite*/
-#include "ivsrcid/ivsrcid_vislands30.h"
-
+#include "gsgpu_irq.h"
 
 #define GSGPU_NUM_OF_VMIDS			4
 
@@ -49,7 +24,10 @@ static void mmu_vram_gtt_location(struct gsgpu_device *adev,
 	/*TODO Use generic register to get vram base address*/
 
 	/*refrence from LS7A2000 page data*/
-	base = 0x1000000000000;
+	if (adev->chip == dev_7a2000)
+		base = 0x1000000000000;
+	else if (adev->chip == dev_2k2000)
+		base = adev->gmc.aper_base;
 
 	gsgpu_device_vram_location(adev, &adev->gmc, base);
 	gsgpu_device_gart_location(adev, mc);
@@ -86,8 +64,7 @@ static int mmu_mc_init(struct gsgpu_device *adev)
 		adev->gmc.aper_size = pci_resource_len(adev->pdev, 2);
 	}
 
-
-	DRM_INFO("aper_base %#llx SIZE %#llx bytes \n",adev->gmc.aper_base, adev->gmc.aper_size);
+	DRM_INFO("aper_base %#llx SIZE %#llx bytes \n", adev->gmc.aper_base, adev->gmc.aper_size);
 	/* In case the PCI BAR is larger than the actual amount of vram */
 	adev->gmc.visible_vram_size = adev->gmc.aper_size;
 	if (adev->gmc.visible_vram_size > adev->gmc.real_vram_size)
@@ -127,7 +104,7 @@ static int mmu_mc_init(struct gsgpu_device *adev)
 static void mmu_flush_gpu_tlb(struct gsgpu_device *adev,
 					uint32_t vmid)
 {
-	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_FLUSH), GSGPU_MMU_FLUSH_PKT(vmid, GSGPU_MMU_FLUSH_VMID) , 0);
+	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_FLUSH), GSGPU_MMU_FLUSH_PKT(vmid, GSGPU_MMU_FLUSH_VMID), 0);
 }
 
 static uint64_t mmu_emit_flush_gpu_tlb(struct gsgpu_ring *ring,
@@ -236,14 +213,14 @@ static int mmu_gart_enable(struct gsgpu_device *adev)
 	gsgpu_cmd_exec(adev, GSCMDi(GSCMD_MMU, MMU_SET_DIR, 0),
 			GSGPU_MMU_DIR_CTRL_256M_1LVL, 0);
 
-	for(i=1;i<GSGPU_NUM_OF_VMIDS;i++) {
+	for (i = 1; i < GSGPU_NUM_OF_VMIDS; i++) {
 		gsgpu_cmd_exec(adev, GSCMDi(GSCMD_MMU, MMU_SET_DIR, i),
 				GSGPU_MMU_DIR_CTRL_1T_3LVL, 0);
 	}
 
-	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_ENABLE), MMU_ENABLE , ~1);
+	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_ENABLE), MMU_ENABLE, ~1);
 
-	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_FLUSH), GSGPU_MMU_FLUSH_PKT(0, GSGPU_MMU_FLUSH_ALL) , 0);
+	gsgpu_cmd_exec(adev, GSCMD(GSCMD_MMU, MMU_FLUSH), GSGPU_MMU_FLUSH_PKT(0, GSGPU_MMU_FLUSH_ALL), 0);
 
 	DRM_INFO("PCIE GART of %uM enabled (table at 0x%016llX).\n",
 		 (unsigned)(adev->gmc.gart_size >> 20),
@@ -281,20 +258,6 @@ static void mmu_gart_disable(struct gsgpu_device *adev)
 	gsgpu_gart_table_vram_unpin(adev);
 }
 
-/**
- * mmu_vm_decode_fault - print human readable fault info
- *
- * @adev: gsgpu_device pointer
- * @status: VM_CONTEXT1_PROTECTION_FAULT_STATUS register value
- * @addr: VM_CONTEXT1_PROTECTION_FAULT_ADDR register value
- *
- * Print human readable fault information ().
- */
-static void mmu_vm_decode_fault(struct gsgpu_device *adev, u32 status,
-				     u32 addr, u32 mc_client, unsigned pasid)
-{
-}
-
 static int mmu_early_init(void *handle)
 {
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
@@ -323,11 +286,11 @@ static inline int mmu_irq_set(struct gsgpu_device *adev)
 {
 	int r;
 
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_GFX_PAGE_INV_FAULT, &adev->gmc.vm_fault);
+	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, GSGPU_SRCID_GFX_PAGE_INV_FAULT, &adev->gmc.vm_fault);
 	if (r)
 		return r;
 
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_GFX_MEM_PROT_FAULT, &adev->gmc.vm_fault);
+	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, GSGPU_SRCID_GFX_MEM_PROT_FAULT, &adev->gmc.vm_fault);
 	if (r)
 		return r;
 
@@ -373,7 +336,6 @@ static inline int mmu_vm_manager_init(struct gsgpu_device *adev)
 	 * number of VMs
 	 * VMID 0 is reserved for System
 	 * gsgpu graphics/compute will use VMIDs 1-7
-	 * amdkfd will use VMIDs 8-15
 	 */
 	adev->vm_manager.id_mgr.num_ids = GSGPU_NUM_OF_VMIDS;
 	gsgpu_vm_manager_init(adev);
@@ -490,7 +452,6 @@ static bool mmu_is_idle(void *handle)
 
 static bool mmu_check_soft_reset(void *handle)
 {
-	//adev->gmc.srbm_soft_reset = 0;
 	return false;
 }
 
@@ -592,7 +553,7 @@ static const struct gsgpu_ip_funcs mmu_ip_funcs = {
 	.suspend = mmu_suspend,
 	.resume = mmu_resume,
 	.is_idle = mmu_is_idle,
-	.wait_for_idle = NULL,//,
+	.wait_for_idle = NULL,
 	.check_soft_reset = mmu_check_soft_reset,
 	.pre_soft_reset = mmu_pre_soft_reset,
 	.soft_reset = mmu_soft_reset,
@@ -624,8 +585,7 @@ static void mmu_set_irq_funcs(struct gsgpu_device *adev)
 	adev->gmc.vm_fault.num_types = 1;
 	adev->gmc.vm_fault.funcs = &mmu_irq_funcs;
 }
-const struct gsgpu_ip_block_version mmu_ip_block =
-{
+const struct gsgpu_ip_block_version mmu_ip_block = {
 	.type = GSGPU_IP_BLOCK_TYPE_GMC,
 	.major = 1,
 	.minor = 0,

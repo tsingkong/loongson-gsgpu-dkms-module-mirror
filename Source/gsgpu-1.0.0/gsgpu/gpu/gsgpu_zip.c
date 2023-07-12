@@ -37,7 +37,7 @@ static int zip_meta_enable(struct gsgpu_device *adev, bool clear)
 	gsgpu_cmd_exec(adev, GSCMDi(GSCMD_ZIP, ZIP_SET_MASK, 0), \
 			lower_32_bits(adev->zip_meta.mask), upper_32_bits(adev->zip_meta.mask));
 
-	gsgpu_cmd_exec(adev, GSCMD(GSCMD_ZIP, ZIP_ENABLE), 0 , 0);
+	gsgpu_cmd_exec(adev, GSCMD(GSCMD_ZIP, ZIP_ENABLE), 0, 0);
 
 	DRM_INFO("PCIE ZIP META of %uM enabled (table at 0x%016llX).\n",
 		 (unsigned)(adev->zip_meta.table_size >> 20),
@@ -58,8 +58,8 @@ static int zip_meta_init(struct gsgpu_device *adev)
 	r = gsgpu_zip_meta_init(adev);
 	if (r)
 		return r;
-	adev->zip_meta.table_size = adev->zip_meta.num_gpu_pages * \
-	        GSGPU_GPU_PAGE_SIZE;
+	adev->zip_meta.table_size = adev->zip_meta.num_gpu_pages *
+		GSGPU_GPU_PAGE_SIZE;
 	adev->zip_meta.mask = roundup_pow_of_two(adev->zip_meta.table_size) - 1;
 	adev->zip_meta.pte_flags = 0;
 	return gsgpu_zip_meta_vram_alloc(adev);
@@ -204,8 +204,7 @@ static const struct gsgpu_ip_funcs zip_ip_funcs = {
 	.post_soft_reset = zip_post_soft_reset,
 };
 
-const struct gsgpu_ip_block_version zip_ip_block =
-{
+const struct gsgpu_ip_block_version zip_ip_block = {
 	.type = GSGPU_IP_BLOCK_TYPE_ZIP,
 	.major = 1,
 	.minor = 0,

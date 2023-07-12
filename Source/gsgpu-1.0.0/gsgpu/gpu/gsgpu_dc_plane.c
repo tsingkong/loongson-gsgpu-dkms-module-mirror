@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include <drm/drm_atomic_helper.h>
 #include "gsgpu.h"
 #include "gsgpu_display.h"

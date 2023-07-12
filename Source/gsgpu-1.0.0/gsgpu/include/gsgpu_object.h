@@ -1,30 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Dave Airlie
- *          Alex Deucher
- *          Jerome Glisse
- */
 #ifndef __GSGPU_OBJECT_H__
 #define __GSGPU_OBJECT_H__
 
@@ -285,7 +258,7 @@ static inline uint64_t gsgpu_sa_bo_gpu_addr(struct gsgpu_sa_bo *sa_bo)
 	return sa_bo->manager->gpu_addr + sa_bo->soffset;
 }
 
-static inline void * gsgpu_sa_bo_cpu_addr(struct gsgpu_sa_bo *sa_bo)
+static inline void *gsgpu_sa_bo_cpu_addr(struct gsgpu_sa_bo *sa_bo)
 {
 	return sa_bo->manager->cpu_ptr + sa_bo->soffset;
 }
@@ -308,5 +281,4 @@ void gsgpu_sa_bo_dump_debug_info(struct gsgpu_sa_manager *sa_manager,
 					 struct seq_file *m);
 #endif
 
-
-#endif
+#endif /* __GSGPU_OBJECT_H__ */

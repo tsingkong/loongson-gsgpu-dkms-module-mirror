@@ -1,6 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2022 Loongson Inc. */
-
 #ifndef __GSGPU_DISPLAY_H__
 #define __GSGPU_DISPLAY_H__
 
@@ -10,4 +7,4 @@ gsgpu_display_user_framebuffer_create(struct drm_device *dev,
 				       struct drm_file *file_priv,
 				       const struct drm_mode_fb_cmd2 *mode_cmd);
 
-#endif
+#endif /* __GSGPU_DISPLAY_H__ */

@@ -1,34 +1,3 @@
-/*
- * Copyright 2009 Jerome Glisse.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE COPYRIGHT HOLDERS, AUTHORS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- */
-/*
- * Authors:
- *    Jerome Glisse <glisse@freedesktop.org>
- *    Thomas Hellstrom <thomas-at-tungstengraphics-dot-com>
- *    Dave Airlie
- */
 #include <drm/ttm/ttm_bo_api.h>
 #include <drm/ttm/ttm_bo_driver.h>
 #include <drm/ttm/ttm_placement.h>
@@ -48,7 +17,7 @@
 #include "gsgpu_object.h"
 #include "gsgpu_trace.h"
 
-/**TODO 
+/**TODO
  *Need fixed this, mmap ops had access handler.
 **/
 #define mmMM_INDEX         0x0
@@ -975,15 +944,12 @@ int gsgpu_ttm_gart_bind(struct gsgpu_device *adev,
 				struct ttm_buffer_object *tbo,
 				uint64_t flags)
 {
-	struct gsgpu_bo *abo = ttm_to_gsgpu_bo(tbo);
 	struct ttm_tt *ttm = tbo->ttm;
 	struct gsgpu_ttm_tt *gtt = (void *)ttm;
 	int r;
 
 	r = gsgpu_gart_bind(adev, gtt->offset, ttm->num_pages,
-			     ttm->pages, gtt->ttm.dma_address, flags);
-
-gart_bind_fail:
+			    ttm->pages, gtt->ttm.dma_address, flags);
 	if (r)
 		DRM_ERROR("failed to bind %lu pages at 0x%08llX\n",
 			  ttm->num_pages, gtt->offset);
@@ -1001,7 +967,7 @@ static int gsgpu_ttm_backend_bind(struct ttm_tt *ttm,
 				   struct ttm_mem_reg *bo_mem)
 {
 	struct gsgpu_device *adev = gsgpu_ttm_adev(ttm->bdev);
-	struct gsgpu_ttm_tt *gtt = (void*)ttm;
+	struct gsgpu_ttm_tt *gtt = (void *)ttm;
 	uint64_t flags;
 	int r = 0;
 
@@ -1043,7 +1009,7 @@ int gsgpu_ttm_alloc_gart(struct ttm_buffer_object *bo)
 {
 	struct gsgpu_device *adev = gsgpu_ttm_adev(bo->bdev);
 	struct ttm_operation_ctx ctx = { false, false };
-	struct gsgpu_ttm_tt *gtt = (void*)bo->ttm;
+	struct gsgpu_ttm_tt *gtt = (void *)bo->ttm;
 	struct ttm_mem_reg tmp;
 	struct ttm_placement placement;
 	struct ttm_place placements;
@@ -1739,8 +1705,7 @@ int gsgpu_ttm_init(struct gsgpu_device *adev)
 		gtt_size = min(max((GSGPU_DEFAULT_GTT_SIZE_MB << 20),
 			       adev->gmc.mc_vram_size),
 			       ((uint64_t)si.totalram * si.mem_unit * 3/4));
-	}
-	else
+	} else
 		gtt_size = (uint64_t)gsgpu_gtt_size << 20;
 
 	/* Initialize GTT memory pool */

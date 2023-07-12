@@ -1,8 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #ifndef __GSGPU_DM_IRQ_H__
 #define __GSGPU_DM_IRQ_H__
 
@@ -56,11 +51,12 @@ enum dc_irq_source {
 	DC_IRQ_SOURCE_HPD_HDMI1,
 	DC_IRQ_SOURCE_HPD_VGA,
 
+	DC_IRQ_SOURCE_HPD_HDMI0_NULL,
+	DC_IRQ_SOURCE_HPD_HDMI1_NULL,
 	DC_IRQ_SOURCES_NUMBER
 };
 
-enum irq_type
-{
+enum irq_type {
 	DC_IRQ_TYPE_VSYNC = DC_IRQ_SOURCE_VSYNC0,
 	DC_IRQ_TYPE_I2C = DC_IRQ_SOURCE_I2C0,
 	DC_IRQ_TYPE_HPD = DC_IRQ_SOURCE_HPD_HDMI0,

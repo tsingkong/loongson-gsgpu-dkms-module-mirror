@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include <linux/pm_runtime.h>
 
 #include <drm/drmP.h>
@@ -28,7 +23,7 @@ static void gsgpu_display_flip_callback(struct dma_fence *f,
 static bool gsgpu_display_flip_handle_fence(struct gsgpu_flip_work *work,
 					     struct dma_fence **f)
 {
-	struct dma_fence *fence= *f;
+	struct dma_fence *fence = *f;
 
 	if (fence == NULL)
 		return false;
@@ -313,8 +308,8 @@ gsgpu_display_user_framebuffer_create(struct drm_device *dev,
 	return &gsgpu_fb->base;
 }
 
-static const struct drm_prop_enum_list gsgpu_audio_enum_list[] =
-{	{ GSGPU_AUDIO_DISABLE, "off" },
+static const struct drm_prop_enum_list gsgpu_audio_enum_list[] = {
+	{ GSGPU_AUDIO_DISABLE, "off" },
 	{ GSGPU_AUDIO_ENABLE, "on" },
 	{ GSGPU_AUDIO_AUTO, "auto" },
 };
@@ -380,8 +375,7 @@ int gsgpu_display_get_crtc_scanoutpos(struct drm_device *dev,
 		ret |= DRM_SCANOUTPOS_ACCURATE;
 		vbl_start = vbl & 0x1fff;
 		vbl_end = (vbl >> 16) & 0x1fff;
-	}
-	else {
+	} else {
 		/* No: Fake something reasonable which gives at least ok results. */
 		vbl_start = mode->crtc_vdisplay;
 		vbl_end = 0;

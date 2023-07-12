@@ -1,27 +1,3 @@
-/*
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * VA LINUX SYSTEMS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- */
-
 #include <drm/drmP.h>
 #include <drm/gsgpu_drm.h>
 #include <drm/drm_gem.h>
@@ -36,67 +12,35 @@
 
 #include "gsgpu.h"
 #include "gsgpu_irq.h"
+#include "gsgpu_dc_vbios.h"
 
-
-/*
- * KMS wrapper.
- * - 3.0.0 - initial driver
- * - 3.1.0 - allow reading more status registers (GRBM, SRBM, XDMA, CP)
- * - 3.2.0 - GFX8: Uses EOP_TC_WB_ACTION_EN, so UMDs don't have to do the same
- *           at the end of IBs.
- * - 3.3.0 - Add VM support for UVD on supported hardware.
- * - 3.4.0 - Add GSGPU_INFO_NUM_EVICTIONS.
- * - 3.5.0 - Add support for new UVD_NO_OP register.
- * - 3.6.0 - kmd involves use CONTEXT_CONTROL in ring buffer.
- * - 3.7.0 - Add support for VCE clock list packet
- * - 3.8.0 - Add support raster config init in the kernel
- * - 3.9.0 - Add support for memory query info about VRAM and GTT.
- * - 3.10.0 - Add support for new fences ioctl, new gem ioctl flags
- * - 3.11.0 - Add support for sensor query info (clocks, temp, etc).
- * - 3.12.0 - Add query for double offchip LDS buffers
- * - 3.13.0 - Add PRT support
- * - 3.14.0 - Fix race in gsgpu_ctx_get_fence() and note new functionality
- * - 3.15.0 - Export more gpu info for gfx9
- * - 3.16.0 - Add reserved vmid support
- * - 3.17.0 - Add GSGPU_NUM_VRAM_CPU_PAGE_FAULTS.
- * - 3.18.0 - Export gpu always on cu bitmap
- * - 3.19.0 - Add support for UVD MJPEG decode
- * - 3.20.0 - Add support for local BOs
- * - 3.21.0 - Add DRM_GSGPU_FENCE_TO_HANDLE ioctl
- * - 3.22.0 - Add DRM_GSGPU_SCHED ioctl
- * - 3.23.0 - Add query for VRAM lost counter
- * - 3.24.0 - Add high priority compute support for gfx9
- * - 3.25.0 - Add support for sensor query info (stable pstate sclk/mclk).
- * - 3.26.0 - GFX9: Process GSGPU_IB_FLAG_TC_WB_NOT_INVALIDATE.
- * - 3.27.0 - Add new chunk to to GSGPU_CS to enable BO_LIST creation.
- */
 #define KMS_DRIVER_MAJOR	0
 #define KMS_DRIVER_MINOR	1
 #define KMS_DRIVER_PATCHLEVEL	0
 
-int gsgpu_vram_limit = 0;
-int gsgpu_vis_vram_limit = 0;
+int gsgpu_vram_limit;
+int gsgpu_vis_vram_limit;
 int gsgpu_gart_size = -1; /* auto */
 int gsgpu_gtt_size = -1; /* auto */
 int gsgpu_moverate = -1; /* auto */
-int gsgpu_benchmarking = 0;
-int gsgpu_testing = 0;
-int gsgpu_disp_priority = 0;
+int gsgpu_benchmarking;
+int gsgpu_testing;
+int gsgpu_disp_priority;
 int gsgpu_msi = -1;
 int gsgpu_lockup_timeout = 10000;
 int gsgpu_runtime_pm = -1;
 int gsgpu_vm_size = -1;
 int gsgpu_vm_block_size = -1;
-int gsgpu_vm_fault_stop = 0;
-int gsgpu_vm_debug = 0;
+int gsgpu_vm_fault_stop;
+int gsgpu_vm_debug;
 int gsgpu_vram_page_split = 2048;
 int gsgpu_vm_update_mode = -1;
-int gsgpu_exp_hw_support = 0;
+int gsgpu_exp_hw_support;
 int gsgpu_sched_jobs = 32;
 int gsgpu_sched_hw_submission = 2;
-int gsgpu_job_hang_limit = 0;
+int gsgpu_job_hang_limit;
 int gsgpu_gpu_recovery = 1; /* auto */
-int gsgpu_using_ram = 0; /* using system  memory for gpu*/
+int gsgpu_using_ram; /* using system memory for gpu*/
 
 int gsgpu_lg100_support = 1;
 MODULE_PARM_DESC(LG100_support, "LG100 support (1 = enabled (default), 0 = disabled");
@@ -251,7 +195,7 @@ module_param_named(sched_hw_submission, gsgpu_sched_hw_submission, int, 0444);
  * Set how much time allow a job hang and not drop it. The default is 0.
  */
 MODULE_PARM_DESC(job_hang_limit, "how much time allow a job hang and not drop it (default 0)");
-module_param_named(job_hang_limit, gsgpu_job_hang_limit, int ,0444);
+module_param_named(job_hang_limit, gsgpu_job_hang_limit, int, 0444);
 
 /**
  * DOC: gpu_recovery (int)
@@ -260,7 +204,7 @@ module_param_named(job_hang_limit, gsgpu_job_hang_limit, int ,0444);
 MODULE_PARM_DESC(gpu_recovery, "Enable GPU recovery mechanism, (1 = enable, 0 = disable, -1 = auto)");
 module_param_named(gpu_recovery, gsgpu_gpu_recovery, int, 0444);
 
-MODULE_PARM_DESC(gsgpu_using_ram,"Gpu uses memory instead vram"
+MODULE_PARM_DESC(gsgpu_using_ram, "Gpu uses memory instead vram"
 		 "0: using vram for gpu 1:use system for gpu");
 module_param_named(gsgpu_using_ram, gsgpu_using_ram, uint, 0444);
 
@@ -283,12 +227,9 @@ static int gsgpu_kick_out_firmware_fb(struct pci_dev *pdev)
 	if (!ap)
 		return -ENOMEM;
 
-	ap->ranges[0].base = pci_resource_start(pdev, 0);
-	ap->ranges[0].size = pci_resource_len(pdev, 0);
+	ap->ranges[0].base = 0;
+	ap->ranges[0].size = ~0;
 
-#ifdef CONFIG_X86
-	primary = pdev->resource[PCI_ROM_RESOURCE].flags & IORESOURCE_ROM_SHADOW;
-#endif
 	drm_fb_helper_remove_conflicting_framebuffers(ap, "gsgpudrmfb", primary);
 	kfree(ap);
 
@@ -307,9 +248,6 @@ static int gsgpu_pci_probe(struct pci_dev *pdev,
 			 "See modparam exp_hw_support\n");
 		return -ENODEV;
 	}
-
-	if (!gsgpu_lg100_support)
-		return -ENODEV;
 
 	/* Get rid of things like offb */
 	ret = gsgpu_kick_out_firmware_fb(pdev);
@@ -617,6 +555,7 @@ static struct pci_driver loongson_vga_pci_driver = {
 static int __init gsgpu_init(void)
 {
 	struct pci_dev *pdev = NULL;
+	struct file *fw_file = NULL;
 	int r;
 
 	if (vgacon_text_force()) {
@@ -628,6 +567,21 @@ static int __init gsgpu_init(void)
 	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev))) {
 		if (pdev->vendor != PCI_VENDOR_ID_LOONGSON)
 			return 0;
+
+		if (!gsgpu_lg100_support || (pdev->device != 0x7a36))
+			return -EINVAL;
+
+		fw_file = filp_open("/usr/lib/firmware/loongson/lg100_cp.bin",
+				    O_RDONLY, 0600);
+		if (IS_ERR(fw_file))
+			return -EINVAL;
+
+		filp_close(fw_file, NULL);
+	}
+
+	if (!check_vbios_info()) {
+		DRM_INFO("gsgpu can not support this board!!!\n");
+		return -EINVAL;
 	}
 
 	r = gsgpu_sync_init();

@@ -1,32 +1,9 @@
-/*
- * Copyright 2014 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
 #include <linux/kernel.h>
 #include <drm/drmP.h>
 #include "gsgpu.h"
 #include "gsgpu_common.h"
 #include "gsgpu_cp.h"
-
-#include "ivsrcid/ivsrcid_vislands30.h"
+#include "gsgpu_irq.h"
 
 #define GFX8_NUM_GFX_RINGS     1
 
@@ -208,18 +185,18 @@ static int gfx_sw_init(void *handle)
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
 	/* EOP Event */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
+	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, GSGPU_SRCID_CP_END_OF_PIPE, &adev->gfx.eop_irq);
 	if (r)
 		return r;
 
 	/* Privileged reg */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_REG_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, GSGPU_SRCID_CP_PRIV_REG_FAULT,
 			      &adev->gfx.priv_reg_irq);
 	if (r)
 		return r;
 
 	/* Privileged inst */
-	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, VISLANDS30_IV_SRCID_CP_PRIV_INSTR_FAULT,
+	r = gsgpu_irq_add_id(adev, GSGPU_IH_CLIENTID_LEGACY, GSGPU_SRCID_CP_PRIV_INSTR_FAULT,
 			      &adev->gfx.priv_inst_irq);
 	if (r)
 		return r;
@@ -404,7 +381,7 @@ static int gfx_wait_for_idle(void *handle)
 {
 	struct gsgpu_device *adev = (struct gsgpu_device *)handle;
 
-	if(gsgpu_cp_wait_done(adev) == true)
+	if (gsgpu_cp_wait_done(adev) == true)
 			return 0;
 
 	return -ETIMEDOUT;
@@ -510,11 +487,11 @@ static void gfx_ring_emit_fence_gfx(struct gsgpu_ring *ring, u64 addr,
 
 	/* EVENT_WRITE_EOP - flush caches, send int */
 	gsgpu_ring_write(ring, GSPKT(GSPKT_FENCE, body_size)
-			| (write64bit ? 1 << 9 : 0)| (int_sel ? 1 << 8 : 0));
+			| (write64bit ? 1 << 9 : 0) | (int_sel ? 1 << 8 : 0));
 	gsgpu_ring_write(ring, lower_32_bits(addr));
 	gsgpu_ring_write(ring, upper_32_bits(addr));
 	gsgpu_ring_write(ring, lower_32_bits(seq));
-	if(write64bit)
+	if (write64bit)
 		gsgpu_ring_write(ring, upper_32_bits(seq));
 
 }
@@ -661,7 +638,7 @@ static const struct gsgpu_ring_funcs gfx_ring_funcs_gfx = {
 		VI_FLUSH_GPU_TLB_NUM_WREG * 5 + 9 + /* VM_FLUSH */
 		5 +  /* FENCE for VM_FLUSH */
 		3 + /* CNTX_CTRL */
-		5 + 5 ,/* FENCE x2 */
+		5 + 5,/* FENCE x2 */
 	.emit_ib_size =	4, /* gfx_ring_emit_ib_gfx */
 	.emit_ib = gfx_ring_emit_ib_gfx,
 	.emit_fence = gfx_ring_emit_fence_gfx,
@@ -709,8 +686,7 @@ static void gfx_set_irq_funcs(struct gsgpu_device *adev)
 	adev->gfx.priv_inst_irq.funcs = &gfx_priv_inst_irq_funcs;
 }
 
-const struct gsgpu_ip_block_version gfx_ip_block =
-{
+const struct gsgpu_ip_block_version gfx_ip_block = {
 	.type = GSGPU_IP_BLOCK_TYPE_GFX,
 	.major = 8,
 	.minor = 0,

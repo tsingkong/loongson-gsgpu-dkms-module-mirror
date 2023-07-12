@@ -1,28 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
-
 #include <linux/kthread.h>
 #include <drm/drmP.h>
 #include <linux/debugfs.h>
@@ -186,11 +161,6 @@ static ssize_t gsgpu_debugfs_gca_config_read(struct file *f, char __user *buf,
  * @buf: User buffer to store read data in
  * @size: Number of bytes to read
  * @pos:  Offset to seek to
- *
- * The offset is treated as the BYTE address of one of the sensors
- * enumerated in amd/include/kgd_pp_interface.h under the
- * 'amd_pp_sensors' enumeration.  For instance to read the UVD VCLK
- * you would use the offset 3 * 4 = 12.
  */
 static ssize_t gsgpu_debugfs_sensor_read(struct file *f, char __user *buf,
 					size_t size, loff_t *pos)
@@ -224,7 +194,7 @@ static ssize_t gsgpu_debugfs_wave_read(struct file *f, char __user *buf,
 {
 	struct gsgpu_device *adev = f->f_inode->i_private;
 	int r, x;
-	ssize_t result=0;
+	ssize_t result = 0;
 	uint32_t offset, se, sh, cu, wave, simd, data[32];
 
 	if (size & 3 || *pos & 3)

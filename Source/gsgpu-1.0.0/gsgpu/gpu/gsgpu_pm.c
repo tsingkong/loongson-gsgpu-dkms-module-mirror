@@ -38,14 +38,14 @@ static ssize_t gsgpu_get_gpu_clk(struct device *dev,
 	uint32_t default_freq_value = 480;
 
 	gpu_res = dc_get_vbios_resource(adev->dc->vbios, 0, GSGPU_RESOURCE_GPU);
-	
+
 	if (NULL == gpu_res) {
 		regular_freq_count = default_freq_count;
 		max_freq_value = default_freq_value;
 	} else {
 		regular_freq_count = gpu_res->count_freq;
 		max_freq_value = gpu_res->shaders_freq;
-	
+
 	}
 	value = max_freq_value;
 	freq = RREG32(GSGPU_FREQ_SCALE);
@@ -95,7 +95,7 @@ static ssize_t gsgpu_get_gpu_clk(struct device *dev,
 static ssize_t gsgpu_read_level(const char *buf, size_t count, uint32_t max_level)
 {
 	int ret;
-	char * tmp;
+	char *tmp;
 	char **str;
 	char *sub_str = NULL;
 	char buf_cpy[100];
@@ -122,7 +122,7 @@ static ssize_t gsgpu_set_gpu_clk(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf,
 		size_t count)
-{	
+{
 	struct drm_device *ddev = dev_get_drvdata(dev);
 	struct gsgpu_device *adev = ddev->dev_private;
 	struct gpu_resource *gpu_res = NULL;
@@ -140,33 +140,33 @@ static ssize_t gsgpu_set_gpu_clk(struct device *dev,
 	level = gsgpu_read_level(buf, count, regular_freq_count);
 
 	switch (level) {
-		case SET_LEVEL0:
-			level = FREQ_LEVEL0;
-			break;
-		case SET_LEVEL1:
-			level = FREQ_LEVEL1;
-			break;
-		case SET_LEVEL2:
-			level = FREQ_LEVEL2;
-			break;
-		case SET_LEVEL3:
-			level = FREQ_LEVEL3;
-			break;
-		case SET_LEVEL4:
-			level = FREQ_LEVEL4;
-			break;
-		case SET_LEVEL5:
-			level = FREQ_LEVEL5;
-			break;
-		case SET_LEVEL6:
-			level = FREQ_LEVEL6;
-			break;
-		case SET_LEVEL7:
-			level = FREQ_LEVEL7;
-			break;
-		default:
-			level = FREQ_LEVEL0;
-			break;
+	case SET_LEVEL0:
+		level = FREQ_LEVEL0;
+		break;
+	case SET_LEVEL1:
+		level = FREQ_LEVEL1;
+		break;
+	case SET_LEVEL2:
+		level = FREQ_LEVEL2;
+		break;
+	case SET_LEVEL3:
+		level = FREQ_LEVEL3;
+		break;
+	case SET_LEVEL4:
+		level = FREQ_LEVEL4;
+		break;
+	case SET_LEVEL5:
+		level = FREQ_LEVEL5;
+		break;
+	case SET_LEVEL6:
+		level = FREQ_LEVEL6;
+		break;
+	case SET_LEVEL7:
+		level = FREQ_LEVEL7;
+		break;
+	default:
+		level = FREQ_LEVEL0;
+		break;
 	}
 
 	gsgpu_cmd_exec(adev, GSCMD(GSCMD_FREQ, level), 0, 0);
@@ -180,13 +180,13 @@ static DEVICE_ATTR(gpu_clk, S_IRUGO | S_IWUSR,
 
 int gsgpu_pm_sysfs_init(struct gsgpu_device *adev)
 {
-        int ret;
+	int ret;
 
-        ret = device_create_file(adev->dev, &dev_attr_gpu_clk);
+    ret = device_create_file(adev->dev, &dev_attr_gpu_clk);
 	if (ret) {
 		DRM_ERROR("failed to create device file for gpu clk\n");
 		return ret;
 	}
 
-        return 0;
+    return 0;
 }

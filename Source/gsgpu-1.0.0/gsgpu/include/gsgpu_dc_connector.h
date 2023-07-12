@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __GSGPU_DC_CONNECTOR__
 #define __GSGPU_DC_CONNECTOR__
 

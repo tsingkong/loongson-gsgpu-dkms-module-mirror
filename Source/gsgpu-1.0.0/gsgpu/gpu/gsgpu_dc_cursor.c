@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include "gsgpu.h"
 #include "gsgpu_dc_crtc.h"
 #include "gsgpu_dc_plane.h"

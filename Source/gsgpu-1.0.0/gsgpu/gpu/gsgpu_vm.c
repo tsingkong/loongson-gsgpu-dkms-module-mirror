@@ -1,30 +1,3 @@
-/*
- * Copyright 2008 Advanced Micro Devices, Inc.
- * Copyright 2008 Red Hat Inc.
- * Copyright 2009 Jerome Glisse.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors: Dave Airlie
- *          Alex Deucher
- *          Jerome Glisse
- */
 #include <linux/dma-fence-array.h>
 #include <linux/interval_tree_generic.h>
 #include <linux/idr.h>
@@ -145,7 +118,7 @@ static void gsgpu_vm_bo_base_init(struct gsgpu_vm_bo_base *base,
 
 	if (!bo)
 		return;
-	
+
 	list_add_tail(&base->bo_list, &bo->va);
 
 	if (bo->tbo.type == ttm_bo_type_kernel)
@@ -245,8 +218,8 @@ static unsigned gsgpu_vm_num_entries(struct gsgpu_device *ldev,
  */
 static unsigned gsgpu_vm_bo_size(struct gsgpu_device *ldev, unsigned level)
 {
-	return GSGPU_GPU_PAGE_ALIGN(gsgpu_vm_num_entries(ldev, level) * 
-	                gsgpu_get_pde_pte_size(ldev));
+	return GSGPU_GPU_PAGE_ALIGN(gsgpu_vm_num_entries(ldev, level) *
+				gsgpu_get_pde_pte_size(ldev));
 }
 
 /**
@@ -556,7 +529,7 @@ int gsgpu_vm_alloc_pts(struct gsgpu_device *ldev,
 	u64 eaddr;
 
 	/**
-	 * validate the parameters 
+	 * validate the parameters
 	 */
 	if (saddr & GSGPU_GPU_PAGE_MASK || size & GSGPU_GPU_PAGE_MASK)
 		return -EINVAL;
@@ -761,8 +734,8 @@ static void gsgpu_vm_do_copy_ptes(struct gsgpu_pte_update_params *params,
 				   u64 flags)
 {
 	u64 src = (params->src +
-	               (addr >> GSGPU_GPU_PAGE_SHIFT) * 
-				   gsgpu_get_pde_pte_size(params->ldev));
+				(addr >> GSGPU_GPU_PAGE_SHIFT) *
+				gsgpu_get_pde_pte_size(params->ldev));
 
 	pe += gsgpu_bo_gpu_offset(bo);
 	trace_gsgpu_vm_copy_ptes(pe, src, count);
@@ -820,8 +793,8 @@ static void gsgpu_vm_cpu_set_ptes(struct gsgpu_pte_update_params *params,
 	void *kptr;
 	u64 value;
 
-	r = gsgpu_bo_kmap(bo , &kptr);
-	if(r)
+	r = gsgpu_bo_kmap(bo, &kptr);
+	if (r)
 		return;
 	pe += kptr;
 
@@ -1111,7 +1084,7 @@ static void gsgpu_vm_handle_huge_pages(struct gsgpu_pte_update_params *p,
 	if (!(flags & GSGPU_PTE_HUGEPAGE)) {
 		if (entry->huge) {
 			/**
-			 * Add the entry to the relocated list to update it. 
+			 * Add the entry to the relocated list to update it.
 			 */
 			entry->huge = false;
 			list_move(&entry->base.vm_status, &p->vm->relocated);
@@ -1154,7 +1127,7 @@ static int gsgpu_vm_update_ptes(struct gsgpu_pte_update_params *params,
 	unsigned nptes;
 
 	/**
-	 * walk over the address space and update the page tables 
+	 * walk over the address space and update the page tables
 	 */
 	for (addr = start; addr < end; addr += nptes,
 	     dst += nptes * GSGPU_GPU_PAGE_SIZE) {
@@ -1225,14 +1198,14 @@ static int gsgpu_vm_bo_update_mapping(struct gsgpu_device *ldev,
 	params.vm = vm;
 
 	/**
-	 * sync to everything on unmapping 
+	 * sync to everything on unmapping
 	 */
 	if (!(flags & GSGPU_PTE_PRESENT))
 		owner = GSGPU_FENCE_OWNER_UNDEFINED;
 
 	if (vm->use_cpu_for_update) {
 		/**
-		 * params.src is used as flag to indicate system Memory 
+		 * params.src is used as flag to indicate system Memory
 		 */
 		if (pages_addr)
 			params.src = ~0;
@@ -1260,7 +1233,7 @@ static int gsgpu_vm_bo_update_mapping(struct gsgpu_device *ldev,
 	 * entries or 2k dwords (whatever is smaller)
      *
      * The second command is for the shadow pagetables.
-	 * 
+	 *
 	 * formula - gsgpu_vm_update_ptes
 	 */
 	if (vm->root.base.bo->shadow)
@@ -1303,7 +1276,7 @@ static int gsgpu_vm_bo_update_mapping(struct gsgpu_device *ldev,
 		u64 *pte;
 		unsigned i;
 
-		/* 
+		/*
 		 * Put the PTEs at the end of the IB
 		 */
 		i = ndw - nptes * (gsgpu_get_pde_pte_size(ldev) / GSGPU_BYTES_PER_DW);
@@ -1370,104 +1343,6 @@ error_free:
  * Returns:
  * 0 for success, -EINVAL for failure.
  */
-#if 0
-static int gsgpu_vm_bo_split_mapping(struct gsgpu_device *adev,                                         
-				struct dma_fence *exclusive,                                                      
-				dma_addr_t *pages_addr,                                                           
-				struct gsgpu_vm *vm,                                                              
-				struct gsgpu_bo_va_mapping *mapping,                                              
-				u64 flags,
-				struct drm_mm_node *nodes,                                                        
-				struct dma_fence **fence)                                                         
-{                                                                                                       
-	u64 pfn, start = mapping->start;
-	int r;
-
-	/* normally,bo_va->flags only contians READABLE and WIRTEABLE bit go here
-	┆* but in case of something, we filter the flags in first place
-	┆*/
-	//if (!(mapping->flags & GSGPU_PTE_READABLE))
-	//  flags &= ~GSGPU_PTE_READABLE;
-	if (!(mapping->flags & GSGPU_PTE_WRITEABLE))
-		flags &= ~GSGPU_PTE_WRITEABLE;
-
-	//flags &= ~GSGPU_PTE_EXECUTABLE;
-	//flags |= mapping->flags & GSGPU_PTE_EXECUTABLE;
-
-	//flags &= ~GSGPU_PTE_MTYPE_MASK;
-	//flags |= (mapping->flags & GSGPU_PTE_MTYPE_MASK);
-
-	trace_gsgpu_vm_bo_update(mapping);
-
-	pfn = mapping->offset >> PAGE_SHIFT;
-	if (nodes) {
-		while (pfn >= nodes->size) {
-			pfn -= nodes->size;
-			++nodes;
-		}
-	}
-
-	do {
-		dma_addr_t *dma_addr = NULL;
-		u64 max_entries;
-		u64 addr, last;
-
-		if (nodes) {
-			addr = nodes->start << PAGE_SHIFT;
-			max_entries = (nodes->size - pfn) *
-				GSGPU_GPU_PAGES_IN_CPU_PAGE;
-		} else {
-			addr = 0;
-			max_entries = 1024;
-		}
-
-		if (pages_addr) {
-			u64 count;
-
-			max_entries = min(max_entries, 16ull * 1024ull);
-			for (count = 1;
-			count < max_entries / GSGPU_GPU_PAGES_IN_CPU_PAGE;
-			++count) {
-				u64 idx = pfn + count;
-
-				if (pages_addr[idx] !=
-				(pages_addr[idx - 1] + PAGE_SIZE))
-					break;
-			}
-
-			//TODO
-			//if (count < min_linear_pages) {
-				addr = pfn << PAGE_SHIFT;
-				dma_addr = pages_addr;
-			//} else {
-			//  addr = pages_addr[pfn];
-			//  max_entries = count * GSGPU_GPU_PAGES_IN_CPU_PAGE;
-			//}
-
-		} else if (flags & GSGPU_PTE_PRESENT) {
-			addr += adev->vm_manager.vram_base_offset;
-			addr += pfn << PAGE_SHIFT;
-		}
-
-		last = min((u64)mapping->last, start + max_entries - 1);
-		r = gsgpu_vm_bo_update_mapping(adev, exclusive, dma_addr, vm,
-						start, last, flags, addr,
-						fence);
-		if (r)
-			return r;
-
-		pfn += (last - start + 1) / GSGPU_GPU_PAGES_IN_CPU_PAGE;
-		if (nodes && nodes->size == pfn) {
-			pfn = 0;
-			++nodes;
-		}
-		start = last + 1;
-
-	} while (unlikely(start != mapping->last + 1));
-
-	return 0;
-}
-#else
 static int gsgpu_vm_bo_split_mapping(struct gsgpu_device *ldev,
 				      struct dma_fence *exclusive,
 				      dma_addr_t *pages_addr,
@@ -1486,7 +1361,7 @@ static int gsgpu_vm_bo_split_mapping(struct gsgpu_device *ldev,
 	trace_gsgpu_vm_bo_update(mapping);
 	pfn = mapping->offset >> PAGE_SHIFT;
 
-    /* vram - find the node and pfn with mapping->offset */
+	/* vram - find the node and pfn with mapping->offset */
 	if ((!pages_addr) && nodes) {
 		while (pfn >= nodes->size) {
 			pfn -= nodes->size;
@@ -1532,7 +1407,6 @@ static int gsgpu_vm_bo_split_mapping(struct gsgpu_device *ldev,
 
 	return 0;
 }
-#endif
 
 /**
  * gsgpu_vm_bo_update - update all BO mappings in the vm page table
@@ -1582,7 +1456,7 @@ int gsgpu_vm_bo_update(struct gsgpu_device *ldev,
 	else
 		flags = 0x0;
 
-	if(bo && bo->flags & GSGPU_GEM_CREATE_COMPRESSED_MASK)
+	if (bo && bo->flags & GSGPU_GEM_CREATE_COMPRESSED_MASK)
 		flags |= (bo->flags & GSGPU_GEM_CREATE_COMPRESSED_MASK)
 				  >> GSGPU_PTE_COMPRESSED_SHIFT;
 
@@ -1612,7 +1486,7 @@ int gsgpu_vm_bo_update(struct gsgpu_device *ldev,
 	list_del_init(&bo_va->base.vm_status);
 	spin_unlock(&vm->moved_lock);
 
-	/* 
+	/*
 	 * If the BO is not in its preferred location add it back to
 	 * the evicted list so that it gets validated again on the
 	 * next command submission.
@@ -2249,7 +2123,7 @@ void gsgpu_vm_bo_invalidate(struct gsgpu_device *ldev,
 static u32 gsgpu_vm_get_block_size(u64 vm_size)
 {
 	(void)(vm_size);
-	return (GSGPU_PAGE_PTE_SHIFT);
+	return GSGPU_PAGE_PTE_SHIFT;
 }
 
 /**
@@ -2317,7 +2191,8 @@ void gsgpu_vm_adjust_size(struct gsgpu_device *ldev, u32 min_vm_size,
 
 	/* block size depends on vm size and hw setup*/
 	if (gsgpu_vm_block_size != -1)
-		ldev->vm_manager.block_size = min((unsigned)gsgpu_vm_block_size, GSGPU_PAGE_PTE_SHIFT);
+		ldev->vm_manager.block_size =
+			min((unsigned)gsgpu_vm_block_size, (unsigned)GSGPU_PAGE_PTE_SHIFT);
 	else if (ldev->vm_manager.num_level > 1)
 		ldev->vm_manager.block_size = GSGPU_PAGE_PTE_SHIFT;
 	else
@@ -2346,7 +2221,7 @@ int gsgpu_vm_init(struct gsgpu_device *ldev, struct gsgpu_vm *vm,
 {
 	struct gsgpu_bo_param bp;
 	struct gsgpu_bo *root;
-	const unsigned align = min(GSGPU_VM_PTB_ALIGN_SIZE,
+	const unsigned align = min((unsigned)GSGPU_VM_PTB_ALIGN_SIZE,
 		GSGPU_VM_PTE_COUNT(ldev) * gsgpu_get_pde_pte_size(ldev));
 	unsigned ring_instance;
 	struct gsgpu_ring *ring;
@@ -2489,13 +2364,7 @@ void gsgpu_vm_fini(struct gsgpu_device *ldev, struct gsgpu_vm *vm)
 {
 	struct gsgpu_bo_va_mapping *mapping, *tmp;
 	struct gsgpu_bo *root;
-	u64 fault;
 	int r;
-
-
-	/* Clear pending page faults from IH when the VM is destroyed */
-	while (kfifo_get(&vm->faults, &fault))
-		gsgpu_ih_clear_fault(ldev, fault);
 
 	if (vm->pasid) {
 		unsigned long flags;

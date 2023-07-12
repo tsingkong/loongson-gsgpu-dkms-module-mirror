@@ -3,4 +3,4 @@
 
 int gsgpu_pm_sysfs_init(struct gsgpu_device *adev);
 
-#endif
+#endif /* __GSGPU_PM_H__ */

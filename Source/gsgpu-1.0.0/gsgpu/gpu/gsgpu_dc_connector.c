@@ -1,14 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
-/*
- * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
- */
-
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_crtc_helper.h>
 
 #include "gsgpu_dc_connector.h"
+#include "gsgpu_dc_crtc.h"
+#include "gsgpu_dc_encoder.h"
 #include "gsgpu_dc_irq.h"
 #include "gsgpu_dc_i2c.h"
+#include "gsgpu_dc_vbios.h"
 
 static struct drm_encoder *best_encoder(struct drm_connector *connector)
 {
@@ -62,17 +60,62 @@ static const struct drm_connector_helper_funcs dc_connector_helper_funcs = {
 	.best_encoder = best_encoder
 };
 
-static enum drm_connector_status
-gsgpu_dc_connector_detect(struct drm_connector *connector, bool force)
+static bool is_connected(struct drm_connector *connector)
 {
-	struct drm_device *dev = connector->dev;
-	struct gsgpu_device *adev = dev->dev_private;
-	enum drm_connector_status status = connector_status_disconnected;
-	int index = connector->index;
-	u32 reg_val;
+	struct gsgpu_device *adev = connector->dev->dev_private;
+	struct gsgpu_dc_i2c *i2c = adev->i2c[connector->index];
+	unsigned char start = 0x0;
+	struct i2c_adapter *adapter;
+	struct i2c_msg msgs = {
+		.addr = DDC_ADDR,
+		.flags = 0,
+		.len = 1,
+		.buf = &start,
+	};
 
-	reg_val = dc_readl(adev, DC_HDMI_HOTPLUG_STATUS);
-	switch (index) {
+	if (!i2c)
+		return false;
+
+	adapter = &i2c->adapter;
+	if (i2c_transfer(adapter, &msgs, 1) != 1) {
+		DRM_DEBUG_KMS("display-%d not connect\n", connector->index);
+		return false;
+	}
+
+	return true;
+}
+
+static enum drm_connector_status
+gsgpu_2k2000_detect(struct drm_connector *connector)
+{
+	struct gsgpu_device *adev = connector->dev->dev_private;
+	enum drm_connector_status status = connector_status_disconnected;
+	u32 reg_val = dc_readl(adev, DC_HDMI_HOTPLUG_STATUS);
+
+	switch (connector->index) {
+	case 0:
+		if (reg_val & 0x1)
+			status = connector_status_connected;
+		break;
+	case 1:
+		if (is_connected(connector))
+			status = connector_status_connected;
+		else
+			status = connector_status_disconnected;
+		break;
+	}
+
+	return status;
+}
+
+static enum drm_connector_status
+gsgpu_7a2000_detect(struct drm_connector *connector)
+{
+	struct gsgpu_device *adev = connector->dev->dev_private;
+	enum drm_connector_status status = connector_status_disconnected;
+	u32 reg_val = dc_readl(adev, DC_HDMI_HOTPLUG_STATUS);
+
+	switch (connector->index) {
 	case 0:
 		if (adev->vga_hpd_status == connector_status_unknown)
 			status = connector_status_unknown;
@@ -81,11 +124,39 @@ gsgpu_dc_connector_detect(struct drm_connector *connector, bool force)
 			status = connector_status_connected;
 		else if (status != adev->vga_hpd_status)
 			status = connector_status_connected;
-	break;
+		break;
 	case 1:
 		if (reg_val & 0x2)
 			status = connector_status_connected;
-	break;
+		break;
+	}
+
+	return status;
+}
+
+static enum drm_connector_status
+gsgpu_dc_connector_detect(struct drm_connector *connector, bool force)
+{
+	struct gsgpu_device *adev = connector->dev->dev_private;
+	enum drm_connector_status status = connector_status_disconnected;
+
+	if (connector->polled == 0)
+		status = connector_status_connected;
+	else if (connector->polled == (DRM_CONNECTOR_POLL_CONNECT
+				      | DRM_CONNECTOR_POLL_DISCONNECT)) {
+		if (is_connected(connector))
+			status = connector_status_connected;
+		else
+			status = connector_status_disconnected;
+	} else if (connector->polled == DRM_CONNECTOR_POLL_HPD) {
+		switch (adev->chip) {
+		case dev_7a2000:
+			status = gsgpu_7a2000_detect(connector);
+			break;
+		case dev_2k2000:
+			status = gsgpu_2k2000_detect(connector);
+			break;
+		}
 	}
 
 	return status;
@@ -176,6 +247,9 @@ int gsgpu_dc_connector_init(struct gsgpu_device *adev, uint32_t link_index)
 
 	DRM_DEBUG_DRIVER("%s()\n", __func__);
 
+	if (adev->dc->link_info[link_index].encoder->has_ext_encoder)
+		return 0;
+
 	if (link_index >= 2)
 		return -1;
 
@@ -201,16 +275,43 @@ int gsgpu_dc_connector_init(struct gsgpu_device *adev, uint32_t link_index)
 
 	mutex_init(&lconnector->hpd_lock);
 
-	if (link_index == 0) {
-		lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C0;
-		lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI0;
-		lconnector->irq_source_vga_hpd = DC_IRQ_SOURCE_HPD_VGA;
-	} else if (link_index == 1) {
-		lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C1;
-		lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI1;
+	switch (adev->chip) {
+	case dev_7a2000:
+		if (link_index == 0) {
+			lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C0;
+			lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI0;
+			lconnector->irq_source_vga_hpd = DC_IRQ_SOURCE_HPD_VGA;
+		} else if (link_index == 1) {
+			lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C1;
+			lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI1;
+		}
+		if (dc_connector->resource->type == DRM_MODE_CONNECTOR_VGA)
+			dc_connector->resource->hotplug = POLLING;
+		break;
+	case dev_2k2000:
+		if (link_index == 0) {
+			lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C0;
+			lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI0;
+		} else if (link_index == 1) {
+			lconnector->irq_source_i2c = DC_IRQ_SOURCE_I2C1;
+			lconnector->irq_source_hpd = DC_IRQ_SOURCE_HPD_HDMI1_NULL;
+		}
+		break;
 	}
 
-	lconnector->base.polled = DRM_CONNECTOR_POLL_HPD;
+	switch (dc_connector->resource->hotplug) {
+	case IRQ:
+		lconnector->base.polled = DRM_CONNECTOR_POLL_HPD;
+		break;
+	case POLLING:
+	default:
+		lconnector->base.polled = DRM_CONNECTOR_POLL_CONNECT |
+					  DRM_CONNECTOR_POLL_DISCONNECT;
+		break;
+	case FORCE_ON:
+		lconnector->base.polled = 0;
+		break;
+	}
 
 	drm_connector_register(&lconnector->base);
 

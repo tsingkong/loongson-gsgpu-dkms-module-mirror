@@ -1,34 +1,3 @@
-/*
- * Copyright 2009 Jerome Glisse.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE COPYRIGHT HOLDERS, AUTHORS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- */
-/*
- * Authors:
- *    Jerome Glisse <glisse@freedesktop.org>
- *    Thomas Hellstrom <thomas-at-tungstengraphics-dot-com>
- *    Dave Airlie
- */
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <drm/drmP.h>
@@ -56,7 +25,7 @@ static bool gsgpu_bo_need_backup(struct gsgpu_device *adev)
 	if (adev->flags & GSGPU_IS_APU)
 		return false;
 
-	if (gsgpu_gpu_recovery == 0 || gsgpu_gpu_recovery == -1 )
+	if (gsgpu_gpu_recovery == 0 || gsgpu_gpu_recovery == -1)
 		return false;
 
 	return true;
@@ -146,7 +115,7 @@ void gsgpu_bo_placement_from_domain(struct gsgpu_bo *abo, u32 domain)
 		places[c].lpfn = 0;
 		places[c].flags = TTM_PL_FLAG_UNCACHED | TTM_PL_FLAG_VRAM | TTM_PL_FLAG_WC;
 
-		if(flags & GSGPU_GEM_CREATE_COMPRESSED_MASK) 
+		if (flags & GSGPU_GEM_CREATE_COMPRESSED_MASK)
 			places[c].flags |= TTM_PL_FLAG_NO_EVICT;
 
 		if (flags & GSGPU_GEM_CREATE_CPU_GTT_USWC)
@@ -448,33 +417,8 @@ static int gsgpu_bo_do_create(struct gsgpu_device *adev,
 
 	bo->flags = bp->flags;
 
-#ifdef CONFIG_X86_32
-	/* XXX: Write-combined CPU mappings of GTT seem broken on 32-bit
-	 * See https://bugs.freedesktop.org/show_bug.cgi?id=84627
-	 */
-	bo->flags &= ~GSGPU_GEM_CREATE_CPU_GTT_USWC;
-#elif defined(CONFIG_X86) && !defined(CONFIG_X86_PAT)
-	/* Don't try to enable write-combining when it can't work, or things
-	 * may be slow
-	 * See https://bugs.freedesktop.org/show_bug.cgi?id=88758
-	 */
-
-#ifndef CONFIG_COMPILE_TEST
-#warning Please enable CONFIG_MTRR and CONFIG_X86_PAT for better performance \
-	 thanks to write-combining
-#endif
-
-	if (bo->flags & GSGPU_GEM_CREATE_CPU_GTT_USWC)
-		DRM_INFO_ONCE("Please enable CONFIG_MTRR and CONFIG_X86_PAT for "
-			      "better performance thanks to write-combining\n");
-	bo->flags &= ~GSGPU_GEM_CREATE_CPU_GTT_USWC;
-#else
-	/* For architectures that don't support WC memory,
-	 * mask out the WC flag from the BO
-	 */
 	if (!drm_arch_can_wc_memory())
 		bo->flags &= ~GSGPU_GEM_CREATE_CPU_GTT_USWC;
-#endif
 
 	bo->tbo.bdev = &adev->mman.bdev;
 	gsgpu_bo_placement_from_domain(bo, bp->domain);

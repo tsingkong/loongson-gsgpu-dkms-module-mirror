@@ -7,9 +7,8 @@ struct gsgpu_vm;
 
 struct gsgpu_hw_sema {
 	struct list_head	list;
-
 	struct gsgpu_vm		*vm;
-        bool		own;
+    bool		own;
 	unsigned	pasid;
 	unsigned	ctx;
 };
@@ -26,4 +25,4 @@ void gsgpu_sema_free(struct gsgpu_device *adev, struct gsgpu_vm *vm);
 int gsgpu_hw_sema_mgr_init(struct gsgpu_device *adev);
 void gsgpu_hw_sema_mgr_fini(struct gsgpu_device *adev);
 
-#endif
+#endif /* __GSGPU_HW_SEMA_H__ */

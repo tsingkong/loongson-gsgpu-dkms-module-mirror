@@ -19,20 +19,18 @@ struct gsgpu_bo_va_mapping {
 	uint64_t flags;
 };
 
-extern void 
-gsgpu_vm_it_insert(struct gsgpu_bo_va_mapping *node, 
-                   struct rb_root_cached *root);
+extern void gsgpu_vm_it_insert(struct gsgpu_bo_va_mapping *node,
+					struct rb_root_cached *root);
 
-extern void 
-gsgpu_vm_it_remove(struct gsgpu_bo_va_mapping *node, 
-                   struct rb_root_cached *root);
+extern void gsgpu_vm_it_remove(struct gsgpu_bo_va_mapping *node,
+					struct rb_root_cached *root);
 
 extern struct gsgpu_bo_va_mapping *
-gsgpu_vm_it_iter_first(struct rb_root_cached *root, 
-                       uint64_t start, uint64_t last);
+gsgpu_vm_it_iter_first(struct rb_root_cached *root,
+					uint64_t start, uint64_t last);
 
 extern struct gsgpu_bo_va_mapping *
-gsgpu_vm_it_iter_next(struct gsgpu_bo_va_mapping *node, 
-                      uint64_t start, uint64_t last);
+gsgpu_vm_it_iter_next(struct gsgpu_bo_va_mapping *node,
+					uint64_t start, uint64_t last);
 
 #endif  /* __GSGPU_VM_IT_H__ */

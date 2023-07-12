@@ -1,26 +1,3 @@
-/*
- * Copyright 2014 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
- * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
- * OTHER DEALINGS IN THE SOFTWARE.
- *
- */
-
 #ifndef __GSGPU_IRQ_H__
 #define __GSGPU_IRQ_H__
 
@@ -30,6 +7,15 @@
 
 #define GSGPU_MAX_IRQ_SRC_ID	0x100
 #define GSGPU_MAX_IRQ_CLIENT_ID	0x100
+
+/* TODO irq srcid need rewrite*/
+#define GSGPU_SRCID_GFX_PAGE_INV_FAULT                 0x00000092  /* 146 */
+#define GSGPU_SRCID_GFX_MEM_PROT_FAULT                 0x00000093  /* 147 */
+#define GSGPU_SRCID_CP_END_OF_PIPE                     0x000000b5  /* 181 */
+#define GSGPU_SRCID_CP_PRIV_REG_FAULT                  0x000000b8  /* 184 */
+#define GSGPU_SRCID_CP_PRIV_INSTR_FAULT                0x000000b9  /* 185 */
+#define GSGPU_SRCID_XDMA_TRAP          	               0x000000e0  /* 224 */
+#define GSGPU_SRCID_XDMA_SRBM_WRITE                    0x000000f7  /* 247 */
 
 struct gsgpu_device;
 struct gsgpu_iv_entry;
@@ -94,4 +80,4 @@ bool gsgpu_irq_enabled(struct gsgpu_device *adev, struct gsgpu_irq_src *src,
 			unsigned type);
 void gsgpu_irq_gpu_reset_resume_helper(struct gsgpu_device *adev);
 
-#endif
+#endif /* __GSGPU_IRQ_H__ */

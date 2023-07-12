@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef __DC_PLANE_H__
 #define __DC_PLANE_H__
 
@@ -38,7 +37,7 @@ int initialize_plane(struct gsgpu_device *adev,
 bool dc_submit_plane_update(struct gsgpu_dc *dc, u32 link,
 			    struct dc_plane_update *update);
 
-bool dc_crtc_plane_update(struct gsgpu_dc_crtc *crtc ,
+bool dc_crtc_plane_update(struct gsgpu_dc_crtc *crtc,
 			  struct dc_plane_update *update);
 
 #endif /* __DC_PLANE_H__ */
